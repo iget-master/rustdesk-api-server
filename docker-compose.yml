@@ -1,0 +1,15 @@
+services:
+  rustdesk-api:
+    build: .
+    image: rustdesk-api-server:local
+    container_name: rustdesk-api
+    restart: unless-stopped
+    ports:
+      - "21114:21114"
+    volumes:
+      - ./data:/data
+    environment:
+      # Só são usados na primeira subida, quando o banco ainda não tem usuários.
+      RUSTDESK_API_ADMIN_USER: admin
+      RUSTDESK_API_ADMIN_PASSWORD: ${RUSTDESK_API_ADMIN_PASSWORD:-troque-esta-senha}
+      RUST_LOG: info

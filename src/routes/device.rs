@@ -1,0 +1,318 @@
+use axum::body::Bytes;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::Json;
+use serde_json::{json, Value};
+
+use crate::auth::AuthUser;
+use crate::db::{now, Db};
+use crate::error::{ApiError, ApiResult};
+use crate::models::platform_from_os;
+use crate::routes::ab::{ensure_tag, upsert_peer};
+use crate::util::{opt_s, parse_value, s};
+use crate::AppState;
+
+/// `POST /api/heartbeat` — chega a cada 15 s (3 s com sessões ativas), sem token.
+/// Se ainda não temos o sysinfo deste ID (banco novo, por exemplo), pedimos com `sysinfo: true`.
+pub async fn heartbeat(State(st): State<AppState>, body: Bytes) -> ApiResult<Json<Value>> {
+    let v = parse_value(&body)?;
+    let id = s(&v, "id");
+    if id.is_empty() {
+        return Err(ApiError::bad_request("id is required"));
+    }
+    let has_sysinfo: Option<i64> =
+        sqlx::query_scalar("SELECT length(sysinfo_json) > 2 FROM devices WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&st.db)
+            .await?;
+    let conns = v
+        .get("conns")
+        .filter(|c| c.is_array())
+        .map(Value::to_string)
+        .unwrap_or_else(|| "[]".to_owned());
+    let t = now();
+    sqlx::query(
+        "INSERT INTO devices (id, uuid, conns, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT(id) DO UPDATE SET \
+           uuid = CASE WHEN excluded.uuid = '' THEN devices.uuid ELSE excluded.uuid END, \
+           conns = excluded.conns, last_seen_at = excluded.last_seen_at",
+    )
+    .bind(&id)
+    .bind(s(&v, "uuid"))
+    .bind(conns)
+    .bind(t)
+    .bind(t)
+    .execute(&st.db)
+    .await?;
+
+    let mut resp = json!({});
+    if has_sysinfo != Some(1) {
+        resp["sysinfo"] = json!(true);
+    }
+    Ok(Json(resp))
+}
+
+/// `POST /api/sysinfo` — resposta em texto puro, como o cliente compara.
+pub async fn sysinfo(State(st): State<AppState>, body: Bytes) -> ApiResult<&'static str> {
+    let v = parse_value(&body)?;
+    let id = s(&v, "id");
+    if id.is_empty() {
+        return Err(ApiError::bad_request("id is required"));
+    }
+    let t = now();
+    sqlx::query(
+        "INSERT INTO devices (id, uuid, hostname, username, os, cpu, memory, version, sysinfo_json, first_seen_at, last_seen_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(id) DO UPDATE SET \
+           uuid = CASE WHEN excluded.uuid = '' THEN devices.uuid ELSE excluded.uuid END, \
+           hostname = excluded.hostname, username = excluded.username, os = excluded.os, \
+           cpu = excluded.cpu, memory = excluded.memory, version = excluded.version, \
+           sysinfo_json = excluded.sysinfo_json, last_seen_at = excluded.last_seen_at",
+    )
+    .bind(&id)
+    .bind(s(&v, "uuid"))
+    .bind(s(&v, "hostname"))
+    .bind(s(&v, "username"))
+    .bind(s(&v, "os"))
+    .bind(s(&v, "cpu"))
+    .bind(s(&v, "memory"))
+    .bind(s(&v, "version"))
+    .bind(serde_json::to_string(&v)?)
+    .bind(t)
+    .bind(t)
+    .execute(&st.db)
+    .await?;
+
+    // Campos `preset-*` de uma instalação pré-configurada (auto-provisionamento).
+    let assignment = Assignment {
+        user_name: opt_s(&v, "preset-user-name"),
+        group: opt_s(&v, "preset-device-group-name"),
+        note: opt_s(&v, "preset-note"),
+        ab_name: opt_s(&v, "preset-address-book-name"),
+        ab_tag: opt_s(&v, "preset-address-book-tag"),
+        ab_alias: opt_s(&v, "preset-address-book-alias"),
+        ab_password: opt_s(&v, "preset-address-book-password"),
+        ab_note: opt_s(&v, "preset-address-book-note"),
+        device_username: None,
+        device_name: None,
+    };
+    apply_assignment(&st.db, &id, &assignment, false).await?;
+    tracing::info!(device = %id, hostname = %s(&v, "hostname"), "sysinfo atualizado");
+    Ok("SYSINFO_UPDATED")
+}
+
+/// `POST /api/switch-grant` — sem a chave pública do dispositivo (fica no hbbs) não há como
+/// verificar a assinatura; aceitar mantém o "trocar lados" funcionando e o log do cliente limpo.
+pub async fn switch_grant() -> Json<Value> {
+    Json(json!({ "accepted": true }))
+}
+
+/// `POST /api/devices/deploy` — só faz sentido com um hbbs que exija deploy; o OSS não exige.
+pub async fn deploy() -> Json<Value> {
+    Json(json!({ "result": "NOT_ENABLED" }))
+}
+
+/// `POST /api/devices/cli` — `rustdesk --assign --token <token de admin> ...`
+pub async fn cli_assign(
+    State(st): State<AppState>,
+    user: AuthUser,
+    body: Bytes,
+) -> ApiResult<StatusCode> {
+    user.require_admin()?;
+    let v = parse_value(&body)?;
+    let id = s(&v, "id");
+    if id.is_empty() {
+        return Err(ApiError::bad_request("id is required"));
+    }
+    let t = now();
+    sqlx::query(
+        "INSERT INTO devices (id, uuid, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?) \
+         ON CONFLICT(id) DO UPDATE SET \
+           uuid = CASE WHEN excluded.uuid = '' THEN devices.uuid ELSE excluded.uuid END",
+    )
+    .bind(&id)
+    .bind(s(&v, "uuid"))
+    .bind(t)
+    .bind(t)
+    .execute(&st.db)
+    .await?;
+    let assignment = Assignment {
+        user_name: opt_s(&v, "user_name"),
+        group: opt_s(&v, "device_group_name"),
+        note: opt_s(&v, "note"),
+        ab_name: opt_s(&v, "address_book_name"),
+        ab_tag: opt_s(&v, "address_book_tag"),
+        ab_alias: opt_s(&v, "address_book_alias"),
+        ab_password: opt_s(&v, "address_book_password"),
+        ab_note: opt_s(&v, "address_book_note"),
+        device_username: opt_s(&v, "device_username"),
+        device_name: opt_s(&v, "device_name"),
+    };
+    apply_assignment(&st.db, &id, &assignment, true).await?;
+    tracing::info!(device = %id, by = %user.user.name, "dispositivo atribuído via --assign");
+    Ok(StatusCode::OK)
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct Assignment {
+    pub user_name: Option<String>,
+    pub group: Option<String>,
+    pub note: Option<String>,
+    pub ab_name: Option<String>,
+    pub ab_tag: Option<String>,
+    pub ab_alias: Option<String>,
+    pub ab_password: Option<String>,
+    pub ab_note: Option<String>,
+    pub device_username: Option<String>,
+    pub device_name: Option<String>,
+}
+
+fn non_empty(v: &Option<String>) -> Option<&str> {
+    v.as_deref().map(str::trim).filter(|x| !x.is_empty())
+}
+
+/// `strict` (CLI/--assign): usuário inexistente é erro e a atribuição sobrescreve a atual.
+/// Não-strict (presets do sysinfo): usuário desconhecido é ignorado, dono já definido é mantido
+/// e o peer só entra no address book se ainda não estiver lá (não clobbera edições do usuário).
+pub async fn apply_assignment(
+    db: &Db,
+    device_id: &str,
+    a: &Assignment,
+    strict: bool,
+) -> ApiResult<()> {
+    let mut user_id: Option<i64> = None;
+    if let Some(name) = non_empty(&a.user_name) {
+        let found: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE name = ?")
+            .bind(name)
+            .fetch_optional(db)
+            .await?;
+        match found {
+            Some(uid) => user_id = Some(uid),
+            None if strict => {
+                return Err(ApiError::bad_request(format!("User '{name}' not found")))
+            }
+            None => tracing::warn!(device = %device_id, user = name, "preset-user-name desconhecido; ignorado"),
+        }
+    }
+    if let Some(uid) = user_id {
+        let sql = if strict {
+            "UPDATE devices SET user_id = ? WHERE id = ?"
+        } else {
+            "UPDATE devices SET user_id = ? WHERE id = ? AND user_id IS NULL"
+        };
+        sqlx::query(sql).bind(uid).bind(device_id).execute(db).await?;
+    }
+    if let Some(g) = non_empty(&a.group) {
+        sqlx::query("UPDATE devices SET device_group = ? WHERE id = ?")
+            .bind(g)
+            .bind(device_id)
+            .execute(db)
+            .await?;
+    }
+    if let Some(n) = non_empty(&a.note) {
+        sqlx::query("UPDATE devices SET note = ? WHERE id = ?")
+            .bind(n)
+            .bind(device_id)
+            .execute(db)
+            .await?;
+    }
+    if let Some(u) = non_empty(&a.device_username) {
+        sqlx::query("UPDATE devices SET username = ? WHERE id = ?")
+            .bind(u)
+            .bind(device_id)
+            .execute(db)
+            .await?;
+    }
+    if let Some(h) = non_empty(&a.device_name) {
+        sqlx::query("UPDATE devices SET hostname = ? WHERE id = ?")
+            .bind(h)
+            .bind(device_id)
+            .execute(db)
+            .await?;
+    }
+
+    let Some(ab_name) = non_empty(&a.ab_name) else {
+        return Ok(());
+    };
+    // Dono efetivo: o usuário desta chamada ou o já atribuído ao dispositivo.
+    let owner: Option<i64> = match user_id {
+        Some(uid) => Some(uid),
+        None => sqlx::query_scalar("SELECT user_id FROM devices WHERE id = ?")
+            .bind(device_id)
+            .fetch_optional(db)
+            .await?
+            .flatten(),
+    };
+    let found: Option<(String, i64)> = sqlx::query_as(
+        "SELECT guid, is_personal FROM address_books WHERE name = ? AND (owner_id = ? OR is_personal = 0) \
+         ORDER BY (owner_id = ?) DESC LIMIT 1",
+    )
+    .bind(ab_name)
+    .bind(owner.unwrap_or(-1))
+    .bind(owner.unwrap_or(-1))
+    .fetch_optional(db)
+    .await?;
+    let (guid, is_personal) = match (found, owner) {
+        (Some(x), _) => x,
+        (None, Some(uid)) => {
+            let guid = uuid::Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO address_books (guid, name, owner_id, is_personal, note, created_at) VALUES (?, ?, ?, 0, '', ?)",
+            )
+            .bind(&guid)
+            .bind(ab_name)
+            .bind(uid)
+            .bind(now())
+            .execute(db)
+            .await?;
+            tracing::info!(ab = ab_name, "address book compartilhado criado por atribuição");
+            (guid, 0)
+        }
+        (None, None) if strict => {
+            return Err(ApiError::bad_request(format!(
+                "Address book '{ab_name}' not found; pass user_name to create it"
+            )))
+        }
+        (None, None) => return Ok(()),
+    };
+
+    if !strict {
+        let exists: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM ab_peers WHERE ab_guid = ? AND id = ?")
+                .bind(&guid)
+                .bind(device_id)
+                .fetch_optional(db)
+                .await?;
+        if exists.is_some() {
+            return Ok(());
+        }
+    }
+    let dev: Option<(String, String, String)> =
+        sqlx::query_as("SELECT username, hostname, os FROM devices WHERE id = ?")
+            .bind(device_id)
+            .fetch_optional(db)
+            .await?;
+    let (username, hostname, os) = dev.unwrap_or_default();
+    let mut tags: Vec<String> = Vec::new();
+    if let Some(tag) = non_empty(&a.ab_tag) {
+        ensure_tag(db, &guid, tag, None).await?;
+        tags.push(tag.to_owned());
+    }
+    let mut peer = json!({
+        "id": device_id,
+        "username": username,
+        "hostname": hostname,
+        "platform": platform_from_os(&os),
+        "alias": non_empty(&a.ab_alias).unwrap_or(""),
+        "tags": tags,
+        "note": non_empty(&a.ab_note).unwrap_or(""),
+    });
+    // O AB pessoal guarda a senha em hash calculado pelo cliente; só o compartilhado aceita texto.
+    if is_personal == 0 {
+        if let Some(pw) = non_empty(&a.ab_password) {
+            peer["password"] = json!(pw);
+        }
+    }
+    upsert_peer(db, &guid, &peer).await?;
+    Ok(())
+}

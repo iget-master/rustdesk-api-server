@@ -1,0 +1,31 @@
+[package]
+name = "rustdesk-api-server"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Implementação mínima e auto-hospedada da API HTTP usada pelo cliente RustDesk"
+license = "MIT"
+
+[[bin]]
+name = "rustdesk-api"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+argon2 = { version = "0.5", features = ["std"] }
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

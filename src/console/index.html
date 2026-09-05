@@ -64,7 +64,10 @@ dialog input:not([type=checkbox]), dialog select { width: 100%; }
 .code { font-family: var(--mono); font-size: 34px; letter-spacing: .18em; text-align: center; margin: 14px 0; }
 .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
 .tabs button.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
-.hint { font-size: 13px; color: var(--muted); }
+.help { position: relative; display: inline-block; vertical-align: middle; margin-left: 6px; }
+.help-btn { width: 20px; height: 20px; padding: 0; border-radius: 50%; font-size: 12px; font-weight: 700; line-height: 18px; text-align: center; color: var(--accent); border-color: var(--accent); background: var(--surface); }
+.help-tip { display: none; position: fixed; z-index: 40; width: min(340px, calc(100vw - 16px)); padding: 10px 12px; background: var(--ink); color: var(--bg); border-radius: 8px; font: 400 13px/1.45 system-ui, "Segoe UI", Roboto, sans-serif; text-transform: none; letter-spacing: 0; white-space: normal; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+.help:hover .help-tip, .help.open .help-tip, .help-btn:focus-visible + .help-tip { display: block; }
 @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } nav { border-right: 0; border-bottom: 1px solid var(--rule); } main { padding: 16px; } }
 </style>
 </head>
@@ -167,6 +170,20 @@ function select(options, value, attrs = {}) {
 }
 function field(label, input) { return el('div', {}, el('label', {}, label), input); }
 function tag(text, cls) { return el('span', { class: 'tag ' + (cls || '') }, text); }
+// Ícone "?" com a explicação: aparece ao passar o mouse (desktop) ou ao tocar (mobile).
+function help(text) {
+  const tip = el('span', { class: 'help-tip', role: 'tooltip' }, text);
+  const btn = el('button', { class: 'help-btn', type: 'button', 'aria-label': 'Ajuda' }, '?');
+  const box = el('span', { class: 'help' }, btn, tip);
+  // balão fixo na tela, logo abaixo do ícone, sempre dentro da largura da janela
+  const place = () => { const r = btn.getBoundingClientRect(); tip.style.top = (r.bottom + 6) + 'px'; tip.style.left = '0px'; const w = tip.getBoundingClientRect().width; tip.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 8 - w)) + 'px'; };
+  btn.onclick = e => { e.preventDefault(); e.stopPropagation(); const open = !box.classList.contains('open'); closeHelps(); if (open) { box.classList.add('open'); place(); } };
+  box.onmouseenter = place;
+  return box;
+}
+function closeHelps() { document.querySelectorAll('.help.open').forEach(h => h.classList.remove('open')); }
+document.addEventListener('click', closeHelps);
+window.addEventListener('scroll', closeHelps, true);
 
 // ---------------------------------------------------------------- login / boot
 async function login() {
@@ -249,8 +266,7 @@ async function pageGroups(main, id) {
   form.append(el('h2', { style: 'margin-top:0' }, 'Novo grupo'), el('div', { class: 'row' }, field('Nome', name), field('Senha permanente das máquinas', pass), field('Nota', note),
     el('div', {}, el('button', { class: 'primary', onclick: async () => { try { const s = await api('/admin/api/groups', { method: 'POST', body: { name: name.value, password: pass.value, note: note.value } }); toast('Grupo criado'); location.hash = '#/grupos/' + s.id; } catch (e) { fail(e); } } }, 'Criar'))));
   main.replaceChildren(
-    el('h1', {}, 'Grupos'),
-    el('p', { class: 'hint' }, 'Cada grupo tem uma senha permanente única (gravada nas máquinas pelo script de instalação) e um address book compartilhado mantido pelo console com as máquinas do grupo e essa senha. Quem tem acesso ao grupo conecta sem digitar senha e sem pedir permissão.'),
+    el('h1', {}, 'Grupos', help('Um grupo reúne as máquinas de uma unidade (posto, loja, filial). Elas compartilham uma senha e aparecem juntas no RustDesk de quem tem acesso, que conecta com um clique, sem ninguém precisar aceitar na tela.')),
     form,
     table(['Grupo', 'Máquinas', 'Online', 'Acessos', 'Nota', ''], groups.map(s => [
       el('span', {}, el('a', { href: '#/grupos/' + s.id }, s.name), s.require_login ? [' ', tag('exige login', 'accent')] : ''), s.devices, el('span', {}, el('span', { class: 'dot' + (s.online ? ' on' : '') }), s.online),
@@ -274,19 +290,17 @@ async function pageGroup(main, id) {
   // senha
   const pw = el('span', { class: 'mono' }, '••••••••••••');
   let shown = false;
-  const pwCard = el('div', { class: 'form' }, el('h2', { style: 'margin-top:0' }, 'Senha permanente do grupo'),
+  const pwCard = el('div', { class: 'form' }, el('h2', { style: 'margin-top:0' }, 'Senha do grupo', help('A senha que as máquinas do grupo aceitam. Quem tem acesso ao grupo entra com ela automaticamente. Trocar aqui vale na hora para quem acessa; nas máquinas, rode o script de instalação de novo.')),
     el('p', {}, pw, ' ',
       el('button', { class: 'small', onclick: () => { shown = !shown; pw.textContent = shown ? s.password : '••••••••••••'; } }, 'mostrar/ocultar'), ' ',
       el('button', { class: 'small', onclick: () => copyText(s.password) }, 'copiar'), ' ',
       el('button', { class: 'small', onclick: async () => { const n = prompt('Nova senha (em branco cancela):'); if (!n) return; try { await api('/admin/api/groups/' + id, { method: 'PUT', body: { password: n } }); toast('Senha alterada — atualize as máquinas'); reload(); } catch (e) { fail(e); } } }, 'definir'), ' ',
-      el('button', { class: 'small', onclick: async () => { if (!confirm('Gerar uma senha nova? As máquinas do grupo precisarão rodar o script de instalação de novo (ou `rustdesk --password`).')) return; try { const r = await api('/admin/api/groups/' + id + '/rotate-password', { method: 'POST' }); dialog(el('h2', { style: 'margin-top:0' }, 'Nova senha do grupo'), el('div', { class: 'code', style: 'font-size:24px;letter-spacing:.08em' }, r.password), el('p', { class: 'hint' }, 'Já está no address book do grupo. Aplique nas máquinas com o script de instalação ou `rustdesk --password`.')); reload(); } catch (e) { fail(e); } } }, 'rotacionar')),
-    el('p', { class: 'hint' }, 'É a senha que o script grava em cada máquina (`rustdesk --password`) e que o address book do grupo entrega aos clientes autorizados. Trocar aqui atualiza o address book na hora; nas máquinas, só com o script.'));
+      el('button', { class: 'small', onclick: async () => { if (!confirm('Gerar uma senha nova? As máquinas do grupo precisarão rodar o script de instalação de novo (ou `rustdesk --password`).')) return; try { const r = await api('/admin/api/groups/' + id + '/rotate-password', { method: 'POST' }); dialog(el('h2', { style: 'margin-top:0' }, 'Nova senha do grupo'), el('div', { class: 'code', style: 'font-size:24px;letter-spacing:.08em' }, r.password), el('p', { class: 'muted', style: 'text-align:center' }, 'Quem tem acesso já recebe a senha nova. Nas máquinas, rode o script de instalação de novo.')); reload(); } catch (e) { fail(e); } } }, 'rotacionar')));
 
   // política de conexão (o hbbs consulta a API antes de intermediar)
   const reqLogin = el('input', { type: 'checkbox', checked: !!s.require_login });
-  const policyCard = el('div', { class: 'form' }, el('h2', { style: 'margin-top:0' }, 'Política de conexão'),
-    el('label', {}, reqLogin, ' Exigir login para conectar: o hbbs só intermedeia conexões de quem está logado no RustDesk e tem acesso a este grupo'),
-    el('p', { class: 'hint' }, 'Com isso uma senha copiada não serve sem sessão válida: sessão vencida ou derrubada no console = sem conexão nova. Depende do hbbs deste projeto configurado com a URL e o segredo de Configurações; sem isso a opção não tem efeito. Acesso por IP direto não passa pelo hbbs — deixe "direct-server" desligado nas máquinas (é o padrão).'),
+  const policyCard = el('div', { class: 'form' }, el('h2', { style: 'margin-top:0' }, 'Política de conexão', help('Com "Exigir login", só entra quem estiver logado no RustDesk e tiver acesso a este grupo. Uma senha copiada deixa de servir: encerrou a sessão, acabou o acesso. Precisa da integração com o hbbs feita em Configurações. Acesso por IP direto não passa por aqui (vem desligado nas máquinas).')),
+    el('label', {}, reqLogin, ' Exigir login para conectar'),
     el('button', { class: 'primary', onclick: async () => { try { await api('/admin/api/groups/' + id, { method: 'PUT', body: { require_login: reqLogin.checked } }); toast('Política salva'); reload(); } catch (e) { fail(e); } } }, 'Salvar'));
 
   // opções (strategy)
@@ -296,10 +310,10 @@ async function pageGroup(main, id) {
   const extra = el('textarea', { rows: 3, placeholder: '{"enable-file-transfer": "N"}' });
   const extraObj = Object.fromEntries(Object.entries(opts).filter(([k]) => k !== 'approve-mode' && k !== 'verification-method'));
   extra.value = Object.keys(extraObj).length ? JSON.stringify(extraObj, null, 1) : '';
-  const optCard = el('div', { class: 'form' }, el('h2', { style: 'margin-top:0' }, 'Opções enviadas às máquinas do grupo'),
+  const optCard = el('div', { class: 'form' }, el('h2', { style: 'margin-top:0' }, 'Configuração das máquinas', help('Enviada automaticamente às máquinas online em até 15 segundos. "Somente senha" deixa a conexão entrar sem ninguém aceitar na tela. Em "Outras opções" vai qualquer configuração do RustDesk em JSON; valor vazio remove.')),
     el('div', { class: 'row' }, field('Modo de aprovação', approve), field('Método de verificação', verif)),
-    field('Outras opções (JSON chave → valor; valor vazio remove)', extra),
-    el('p', { class: 'hint' }, 'Aplicadas via heartbeat (strategy) em até 15 s em cada máquina online. Última alteração: ' + fmtTs(s.options_updated_at)),
+    field('Outras opções (avançado, JSON)', extra),
+    el('p', { class: 'muted', style: 'font-size:13px' }, 'Última alteração: ' + fmtTs(s.options_updated_at)),
     el('button', { class: 'primary', onclick: async () => { let more = {}; try { more = extra.value.trim() ? JSON.parse(extra.value) : {}; } catch (_) { return toast('JSON inválido nas outras opções'); } try { await api('/admin/api/groups/' + id, { method: 'PUT', body: { options: { ...more, 'approve-mode': approve.value, 'verification-method': verif.value } } }); toast('Opções enviadas'); reload(); } catch (e) { fail(e); } } }, 'Salvar e enviar'));
 
   // máquinas
@@ -309,14 +323,13 @@ async function pageGroup(main, id) {
   const devCard = el('div', {}, el('h2', {}, `Máquinas (${devices.length})`),
     table(['', 'ID', 'Host', 'Usuário SO', 'SO', 'Versão', 'Último heartbeat', 'Nota', ''], devices.map(d => [
       el('span', { class: 'dot' + (d.online ? ' on' : '') }), el('span', { class: 'mono' }, d.id), d.hostname, d.username, d.platform || d.os, d.version, fmtAgo(d.last_seen_at, now) + ' atrás', d.note,
-      el('button', { class: 'small', onclick: async () => { try { await api('/admin/api/devices/' + d.id, { method: 'PUT', body: { group_id: null } }); reload(); } catch (e) { fail(e); } } }, 'remover do grupo')]), 'Nenhuma máquina neste grupo ainda. Use o script de instalação abaixo ou adicione uma máquina já conhecida.'),
+      el('button', { class: 'small', onclick: async () => { try { await api('/admin/api/devices/' + d.id, { method: 'PUT', body: { group_id: null } }); reload(); } catch (e) { fail(e); } } }, 'remover do grupo')]), 'Nenhuma máquina ainda. Rode o script de instalação abaixo ou adicione uma máquina já conhecida.'),
     el('div', { class: 'row', style: 'margin-top:10px' }, field('Adicionar máquina já conhecida', addSel), el('div', {}, el('button', { onclick: async () => { if (!addSel.value) return; try { await api('/admin/api/devices/' + addSel.value, { method: 'PUT', body: { group_id: id } }); reload(); } catch (e) { fail(e); } } }, 'Adicionar'))));
 
   // acessos
   const userSel = select([['', '— usuário —'], ...users.filter(u => u.status === 1).map(u => [u.id, `${u.name}${u.display_name ? ' (' + u.display_name + ')' : ''} · ${KINDS[u.kind] || u.kind}${u.is_admin ? ' · admin' : ''}`])], '');
   const ruleSel = select(Object.entries(RULES), '1'); const expIn = el('input', { type: 'datetime-local' });
-  const grantCard = el('div', {}, el('h2', {}, 'Quem pode acessar este grupo'),
-    el('p', { class: 'hint' }, 'Administradores sempre têm controle total de todos os grupos. Os demais entram aqui — usuários externos só enxergam os grupos listados para eles.'),
+  const grantCard = el('div', {}, el('h2', {}, 'Quem pode acessar este grupo', help('Administradores acessam tudo. Aqui você libera o grupo para a equipe ou para terceiros. Usuários externos só veem os grupos liberados para eles.')),
     table(['Usuário', 'Tipo', 'Permissão', 'Validade', ''], s.grants.map(g => [
       el('span', {}, g.user_name, g.display_name ? el('span', { class: 'muted' }, ' · ' + g.display_name) : ''), tag(KINDS[g.kind] || g.kind, g.kind === 'external' ? 'warn' : ''), RULES[g.rule] || g.rule,
       g.expires_at ? el('span', {}, fmtTs(g.expires_at), ' ', g.expired ? tag('vencido', 'bad') : '') : 'sem validade',
@@ -330,8 +343,7 @@ async function pageGroup(main, id) {
   const loadScript = async () => { try { scriptBox.value = await api(`/admin/api/groups/${id}/install-script?os=${osSel}`); } catch (e) { scriptBox.value = '# ' + e.message; } };
   const tabW = el('button', { class: 'on', onclick: () => { osSel = 'windows'; tabW.classList.add('on'); tabL.classList.remove('on'); loadScript(); } }, 'Windows (PowerShell)');
   const tabL = el('button', { onclick: () => { osSel = 'linux'; tabL.classList.add('on'); tabW.classList.remove('on'); loadScript(); } }, 'Linux (bash)');
-  const scriptCard = el('div', {}, el('h2', {}, 'Script de instalação / matrícula'),
-    el('p', { class: 'hint' }, 'Rode como administrador em cada máquina do grupo: instala o RustDesk (se preciso), aponta para o seu servidor, define a senha permanente do grupo, deixa o modo "somente senha" e matricula a máquina neste grupo. O token de matrícula só serve para isto.'),
+  const scriptCard = el('div', {}, el('h2', {}, 'Script de instalação', help('Rode como administrador em cada máquina do grupo. Ele instala o RustDesk se precisar, aponta para o seu servidor, grava a senha do grupo e cadastra a máquina aqui. Tudo em um passo.')),
     el('div', { class: 'tabs' }, tabW, tabL), scriptBox,
     el('div', { style: 'margin-top:8px' }, el('button', { onclick: () => copyText(scriptBox.value) }, 'Copiar script')));
   loadScript();
@@ -353,7 +365,7 @@ async function pageDevices(main) {
       return [el('span', { class: 'dot' + (d.online ? ' on' : ''), title: d.online ? 'online' : 'offline' }), el('span', { class: 'mono' }, d.id), d.hostname, d.username, d.platform || d.os, d.version, sel, d.last_seen_at ? fmtAgo(d.last_seen_at, now) + ' atrás' : 'nunca',
         el('span', {}, d.note || '', ' ', el('button', { class: 'small', onclick: async () => { const n = prompt('Nota:', d.note || ''); if (n !== null) { try { await api('/admin/api/devices/' + d.id, { method: 'PUT', body: { note: n } }); load(); } catch (e) { fail(e); } } } }, 'editar')),
         el('button', { class: 'small danger', onclick: async () => { if (!confirm(`Remover ${d.hostname || d.id} do inventário? Volta sozinho no próximo heartbeat.`)) return; try { await api('/admin/api/devices/' + d.id, { method: 'DELETE' }); load(); } catch (e) { fail(e); } } }, 'remover')];
-    }), 'Nenhum dispositivo. As máquinas aparecem sozinhas após o heartbeat (serviço instalado apontando para esta API).'));
+    }), 'Nenhum dispositivo ainda. As máquinas aparecem sozinhas depois de instaladas com o script de um grupo.'));
   };
   q.addEventListener('input', () => { clearTimeout(q._t); q._t = setTimeout(load, 300); });
   stSel.onchange = load;
@@ -375,10 +387,9 @@ function userEditor(u) {
     el('label', {}, f.is_admin, ' Administrador (console e controle total dos grupos)'),
     u ? el('label', {}, f.status, ' Conta ativa') : null,
     field('Conta válida até (opcional)', f.expires_at),
-    el('h2', {}, 'Acesso sob demanda'),
-    el('label', {}, f.tfa, ' Exigir código de acesso no login (você gera o código aqui no console e informa ao técnico)'),
-    field('Sessão expira após (horas; 0 = não expira)', f.session_hours),
-    el('p', { class: 'hint' }, 'Combinação típica para suporte externo: tipo Externo + código de acesso + sessão de 4 h + acesso somente leitura ao grupo. Vencida a sessão, o cliente dele perde o address book do grupo.'));
+    el('h2', {}, 'Acesso sob demanda', help('Ideal para suporte externo: tipo Externo, código de acesso e sessão de poucas horas. Você gera o código aqui e informa ao técnico na hora do atendimento; ele vale uma vez. Quando a sessão vence, o acesso some do RustDesk dele.')),
+    el('label', {}, f.tfa, ' Exigir código de acesso no login'),
+    field('Sessão expira após (horas; 0 = não expira)', f.session_hours));
   const read = () => ({ display_name: f.display_name.value, email: f.email.value, note: f.note.value, kind: f.kind.value, is_admin: f.is_admin.checked, status: f.status.checked ? 1 : 0, expires_at: fromInput(f.expires_at.value), tfa: f.tfa.checked ? 'console' : 'none', session_hours: Number(f.session_hours.value) || 0 });
   return { box, read };
 }
@@ -389,7 +400,7 @@ async function pageUsers(main) {
   const name = el('input', { placeholder: 'ex.: suporte-erp' }), pass = el('input', { placeholder: 'em branco = gera' });
   const ed = userEditor(null);
   const form = el('div', { class: 'form' }, el('h2', { style: 'margin-top:0' }, 'Novo usuário'), el('div', { class: 'row' }, field('Nome de login', name), field('Senha', pass)), ed.box,
-    el('div', { style: 'margin-top:10px' }, el('button', { class: 'primary', onclick: async () => { try { const r = await api('/admin/api/users', { method: 'POST', body: { name: name.value, password: pass.value, ...ed.read() } }); dialog(el('h2', { style: 'margin-top:0' }, 'Usuário criado'), el('p', {}, 'Login: ', el('b', {}, r.user.name)), el('p', {}, 'Senha: ', el('span', { class: 'mono' }, r.password), ' ', el('button', { class: 'small', onclick: () => copyText(r.password) }, 'copiar')), el('p', { class: 'hint' }, 'Anote agora — a senha não é mostrada de novo.')); reload(); } catch (e) { fail(e); } } }, 'Criar')));
+    el('div', { style: 'margin-top:10px' }, el('button', { class: 'primary', onclick: async () => { try { const r = await api('/admin/api/users', { method: 'POST', body: { name: name.value, password: pass.value, ...ed.read() } }); dialog(el('h2', { style: 'margin-top:0' }, 'Usuário criado'), el('p', {}, 'Login: ', el('b', {}, r.user.name)), el('p', {}, 'Senha: ', el('span', { class: 'mono' }, r.password), ' ', el('button', { class: 'small', onclick: () => copyText(r.password) }, 'copiar')), el('p', { class: 'muted' }, 'Anote agora: a senha não será mostrada de novo.')); reload(); } catch (e) { fail(e); } } }, 'Criar')));
   const now = Math.floor(Date.now() / 1000);
   main.replaceChildren(el('h1', {}, 'Usuários'), form,
     table(['Login', 'Nome', 'Tipo', 'Admin', 'Status', 'Validade', 'Acesso sob demanda', 'Acessos', 'Sessões', ''], users.map(u => [
@@ -399,7 +410,7 @@ async function pageUsers(main) {
       u.grants.length ? u.grants.map(g => el('span', { class: 'tag' }, g.group_name + ' · ' + (RULES[g.rule] || g.rule).toLowerCase())) : (u.is_admin ? el('span', { class: 'muted' }, 'todos') : el('span', { class: 'muted' }, 'nenhum')),
       u.sessions,
       el('div', { class: 'actions' },
-        el('button', { class: 'small primary', disabled: u.tfa !== 'console', title: u.tfa !== 'console' ? 'Ative "exigir código de acesso" em Editar' : '', onclick: async () => { const ttl = prompt('Validade do código em minutos:', '10'); if (!ttl) return; try { const r = await api(`/admin/api/users/${u.id}/access-code`, { method: 'POST', body: { ttl_minutes: Number(ttl) } }); dialog(el('h2', { style: 'margin-top:0' }, 'Código de acesso para ' + u.name), el('div', { class: 'code' }, r.code), el('p', { style: 'text-align:center' }, el('button', { onclick: () => copyText(r.code) }, 'copiar')), el('p', { class: 'hint' }, `Uso único, válido até ${fmtTs(r.expires_at)}. O técnico entra com o login e a senha dele; quando o RustDesk pedir o código, informe este.`)); reload(); } catch (e) { fail(e); } } }, 'Gerar código'),
+        el('button', { class: 'small primary', disabled: u.tfa !== 'console', title: u.tfa !== 'console' ? 'Ative "exigir código de acesso" em Editar' : '', onclick: async () => { const ttl = prompt('Validade do código em minutos:', '10'); if (!ttl) return; try { const r = await api(`/admin/api/users/${u.id}/access-code`, { method: 'POST', body: { ttl_minutes: Number(ttl) } }); dialog(el('h2', { style: 'margin-top:0' }, 'Código de acesso para ' + u.name), el('div', { class: 'code' }, r.code), el('p', { style: 'text-align:center' }, el('button', { onclick: () => copyText(r.code) }, 'copiar')), el('p', { class: 'muted', style: 'text-align:center' }, `Vale uma vez, até ${fmtTs(r.expires_at)}. Informe ao técnico quando o RustDesk pedir o código.`)); reload(); } catch (e) { fail(e); } } }, 'Gerar código'),
         el('button', { class: 'small', onclick: () => { const e2 = userEditor(u); dialog(el('h2', { style: 'margin-top:0' }, 'Editar ' + u.name), e2.box, el('p', { style: 'margin-top:12px' }, el('button', { class: 'primary', onclick: async () => { try { await api('/admin/api/users/' + u.id, { method: 'PUT', body: e2.read() }); $('#dlg').close(); reload(); } catch (e) { fail(e); } } }, 'Salvar'))); } }, 'Editar'),
         el('button', { class: 'small', onclick: async () => { if (!confirm('Gerar uma senha nova para ' + u.name + '? As sessões dele serão encerradas.')) return; try { const r = await api(`/admin/api/users/${u.id}/password`, { method: 'POST', body: {} }); dialog(el('h2', { style: 'margin-top:0' }, 'Nova senha de ' + u.name), el('p', {}, el('span', { class: 'mono' }, r.password), ' ', el('button', { class: 'small', onclick: () => copyText(r.password) }, 'copiar'))); reload(); } catch (e) { fail(e); } } }, 'Senha'),
         el('button', { class: 'small', disabled: !u.sessions, onclick: async () => { try { await api(`/admin/api/users/${u.id}/logout`, { method: 'POST' }); toast('Sessões encerradas'); reload(); } catch (e) { fail(e); } } }, 'Derrubar sessões'),
@@ -414,8 +425,7 @@ async function pageGrants(main) {
   const userSel = select([['', '— usuário —'], ...users.filter(u => u.status === 1).map(u => [u.id, `${u.name} · ${KINDS[u.kind] || u.kind}`])], '');
   const stSel = select([['', '— grupo —'], ...groups.map(s => [s.id, s.name])], '');
   const ruleSel = select(Object.entries(RULES), '1'); const expIn = el('input', { type: 'datetime-local' });
-  main.replaceChildren(el('h1', {}, 'Acessos aos grupos'),
-    el('p', { class: 'hint' }, 'Um acesso dá ao usuário o address book do grupo (com a senha das máquinas embutida). Administradores não precisam de acesso: têm todos.'),
+  main.replaceChildren(el('h1', {}, 'Acessos aos grupos', help('Um acesso libera o grupo no RustDesk do usuário, já com a senha das máquinas. Administradores não precisam: acessam tudo.')),
     el('div', { class: 'form' }, el('div', { class: 'row' }, field('Usuário', userSel), field('Grupo', stSel), field('Permissão', ruleSel), field('Validade (opcional)', expIn),
       el('div', {}, el('button', { class: 'primary', onclick: async () => { if (!userSel.value || !stSel.value) return; try { await api('/admin/api/grants', { method: 'POST', body: { user_id: Number(userSel.value), group_id: Number(stSel.value), rule: Number(ruleSel.value), expires_at: fromInput(expIn.value) } }); reload(); } catch (e) { fail(e); } } }, 'Conceder')))),
     table(['Grupo', 'Usuário', 'Tipo', 'Permissão', 'Validade', ''], grants.map(g => [
@@ -456,13 +466,10 @@ async function pageConfig(main) {
   const f = { server_host: el('input', { value: s.server_host, placeholder: 'rustdesk.exemplo.com.br' }), server_key: el('input', { value: s.server_key, placeholder: 'conteúdo de id_ed25519.pub' }), api_url: el('input', { value: s.api_url || location.origin, placeholder: location.origin }), download_url: el('input', { value: s.download_url, placeholder: 'https://github.com/rustdesk/rustdesk/releases/download/…/rustdesk-…-x86_64.exe' }) };
   Object.values(f).forEach(i => i.style.width = '100%');
   const envText = `API_AUTH_URL=http://127.0.0.1:${location.port || 21114}/api/internal/authorize\nAPI_AUTH_SECRET=${s.hbbs_secret}`;
-  const hbbsCard = el('div', { class: 'form', style: 'max-width:720px;margin-top:16px' }, el('h2', { style: 'margin-top:0' }, 'Integração com o hbbs (autorização das conexões)'),
-    el('p', { class: 'hint' }, 'Nos grupos com "exigir login", o hbbs consulta esta API antes de intermediar cada conexão e recusa quem não está logado ou não tem acesso. Precisa do hbbs do fork iget-master/rustdesk-server com estas variáveis de ambiente (ajuste o host/porta se a API não roda na mesma máquina):'),
+  const hbbsCard = el('div', { class: 'form', style: 'max-width:720px;margin-top:16px' }, el('h2', { style: 'margin-top:0' }, 'Integração com o servidor RustDesk (hbbs)', help('Faz o servidor RustDesk consultar este console antes de cada conexão e recusar quem não está logado ou não tem acesso, nos grupos com "Exigir login". Cole as variáveis no serviço hbbs e reinicie-o; ajuste o endereço se o console roda em outra máquina. Se o console estiver fora do ar, as conexões são recusadas (API_AUTH_FAIL_OPEN=Y inverte). As recusas ficam em Auditoria → Recusadas.')),
     el('pre', { class: 'mono', style: 'white-space:pre-wrap;user-select:all' }, envText),
-    el('button', { class: 'small', onclick: () => copyText(envText) }, 'copiar'),
-    el('p', { class: 'hint' }, 'Por padrão o hbbs recusa conexões quando não consegue falar com a API (API_AUTH_FAIL_OPEN=Y inverte isso). As recusas aparecem em Auditoria → Recusadas.'));
-  main.replaceChildren(el('h1', {}, 'Configurações'),
-    el('p', { class: 'hint' }, 'Usadas para gerar o script de instalação dos grupos. O servidor de ID e a chave são os do seu hbbs; a URL da API é como as máquinas alcançam este console.'),
+    el('button', { class: 'small', onclick: () => copyText(envText) }, 'copiar'));
+  main.replaceChildren(el('h1', {}, 'Configurações', help('Dados usados para montar o script de instalação: endereço e chave do seu servidor RustDesk, endereço deste console e o instalador do RustDesk.')),
     el('div', { class: 'form', style: 'max-width:720px' }, field('Servidor de ID (hbbs)', f.server_host), field('Chave pública do servidor (Key)', f.server_key), field('URL da API', f.api_url), field('Link do instalador do RustDesk (Windows .exe)', f.download_url),
       el('div', { style: 'margin-top:12px' }, el('button', { class: 'primary', onclick: async () => { try { await api('/admin/api/settings', { method: 'PUT', body: Object.fromEntries(Object.entries(f).map(([k, i]) => [k, i.value])) }); toast('Salvo'); } catch (e) { fail(e); } } }, 'Salvar'))),
     hbbsCard);

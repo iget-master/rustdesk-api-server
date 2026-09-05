@@ -23,6 +23,8 @@ use crate::groups::{self, SYSTEM_USER};
 use crate::util::{i, opt_s, parse_value, s};
 use crate::AppState;
 
+use super::authorize::{ensure_hbbs_secret, HBBS_SECRET_KEY};
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/overview", get(overview))
@@ -43,6 +45,7 @@ pub fn router() -> Router<AppState> {
         .route("/audit/conn", get(audit_conn))
         .route("/audit/file", get(audit_file))
         .route("/audit/alarm", get(audit_alarm))
+        .route("/audit/denied", get(audit_denied))
 }
 
 const SETTING_KEYS: &[&str] = &["server_host", "server_key", "api_url", "download_url"];
@@ -58,6 +61,10 @@ async fn settings_map(db: &Db) -> ApiResult<Map<String, Value>> {
     for (k, v) in rows {
         map.insert(k, Value::String(v));
     }
+    map.insert(
+        HBBS_SECRET_KEY.to_owned(),
+        Value::String(ensure_hbbs_secret(db).await?),
+    );
     Ok(map)
 }
 
@@ -143,6 +150,7 @@ async fn group_json(db: &Db, st: &GroupRow, t: i64) -> ApiResult<Value> {
         "options": st.options_json(),
         "options_updated_at": st.options_updated_at,
         "enroll_token": st.enroll_token,
+        "require_login": st.require_login != 0,
         "created_at": st.created_at,
         "devices": devices,
         "online": online,
@@ -202,6 +210,10 @@ pub async fn groups_update(
     }
     if let Some(options) = v.get("options") {
         groups::set_options(&st.db, id, options.clone()).await?;
+    }
+    if let Some(require) = v.get("require_login").and_then(Value::as_bool) {
+        groups::set_require_login(&st.db, id, require).await?;
+        tracing::info!(group = id, require_login = require, by = %user.user.name, "política de conexão alterada");
     }
     let group = groups::get(&st.db, id).await?;
     Ok(Json(group_json(&st.db, &group, now()).await?))
@@ -933,7 +945,7 @@ struct AuditConnRow {
     device_id: String,
     hostname: Option<String>,
     group_id: Option<i64>,
-    group: Option<String>,
+    group_name: Option<String>,
     peer_id: String,
     peer_name: String,
     ip: String,
@@ -955,7 +967,7 @@ fn audit_conn_json(r: &AuditConnRow) -> Value {
         "device_id": r.device_id,
         "hostname": r.hostname,
         "group_id": r.group_id,
-        "group": r.group,
+        "group": r.group_name,
         "peer_id": r.peer_id,
         "peer_name": r.peer_name,
         "ip": r.ip,
@@ -984,7 +996,7 @@ pub async fn audit_conn(
     }
     let total = count.fetch_one(&st.db).await?;
     let sql = format!(
-        "SELECT a.guid, a.device_id, d.hostname, d.group_id, st.name AS group, a.peer_id, a.peer_name, \
+        "SELECT a.guid, a.device_id, d.hostname, d.group_id, st.name AS group_name, a.peer_id, a.peer_name, \
          a.ip, a.conn_type, a.primary_auth, a.two_factor, a.note, a.started_at, a.authed_at, a.closed_at \
          {AUDIT_CONN_FROM}{clause} ORDER BY a.started_at DESC LIMIT ? OFFSET ?"
     );
@@ -1000,11 +1012,82 @@ pub async fn audit_conn(
 }
 
 #[derive(sqlx::FromRow)]
+struct AuditDeniedRow {
+    at: i64,
+    peer_id: String,
+    hostname: Option<String>,
+    group_id: Option<i64>,
+    group_name: Option<String>,
+    from_ip: String,
+    user_name: String,
+    reason: String,
+}
+
+/// `GET /admin/api/audit/denied` — conexões que o hbbs recusou depois de consultar a API.
+/// Filtros: `group` (id), `device` (ID da máquina), `since`/`until` (unix).
+pub async fn audit_denied(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<Json<Value>> {
+    user.require_admin()?;
+    let mut filters: Vec<&str> = Vec::new();
+    let mut binds: Vec<String> = Vec::new();
+    for (param, column) in [
+        ("group", "a.group_id = ?"),
+        ("device", "a.peer_id = ?"),
+        ("since", "a.at >= ?"),
+        ("until", "a.at <= ?"),
+    ] {
+        if let Some(x) = q.get(param).filter(|x| !x.is_empty()) {
+            filters.push(column);
+            binds.push(x.clone());
+        }
+    }
+    let clause = if filters.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", filters.join(" AND "))
+    };
+    let (limit, offset) = limit_offset(&q);
+    const FROM: &str = "FROM authz_denied a LEFT JOIN devices d ON d.id = a.peer_id \
+        LEFT JOIN groups st ON st.id = a.group_id";
+    let count_sql = format!("SELECT COUNT(*) {FROM}{clause}");
+    let mut count = sqlx::query_scalar::<_, i64>(&count_sql);
+    for b in &binds {
+        count = count.bind(b.as_str());
+    }
+    let total = count.fetch_one(&st.db).await?;
+    let sql = format!(
+        "SELECT a.at, a.peer_id, d.hostname, a.group_id, st.name AS group_name, a.from_ip, a.user_name, a.reason \
+         {FROM}{clause} ORDER BY a.at DESC LIMIT ? OFFSET ?"
+    );
+    let mut query = sqlx::query_as::<_, AuditDeniedRow>(&sql);
+    for b in &binds {
+        query = query.bind(b.as_str());
+    }
+    let rows = query.bind(limit).bind(offset).fetch_all(&st.db).await?;
+    Ok(Json(json!({
+        "total": total,
+        "data": rows.iter().map(|r| json!({
+            "at": r.at,
+            "peer_id": r.peer_id,
+            "hostname": r.hostname,
+            "group_id": r.group_id,
+            "group": r.group_name,
+            "from_ip": r.from_ip,
+            "user_name": r.user_name,
+            "reason": r.reason,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+#[derive(sqlx::FromRow)]
 struct AuditFileRow {
     guid: String,
     device_id: String,
     hostname: Option<String>,
-    group: Option<String>,
+    group_name: Option<String>,
     peer_id: String,
     conn_id: Option<i64>,
     typ: Option<i64>,
@@ -1031,7 +1114,7 @@ pub async fn audit_file(
     }
     let total = count.fetch_one(&st.db).await?;
     let sql = format!(
-        "SELECT a.guid, a.device_id, d.hostname, st.name AS group, a.peer_id, a.conn_id, a.type AS typ, \
+        "SELECT a.guid, a.device_id, d.hostname, st.name AS group_name, a.peer_id, a.conn_id, a.type AS typ, \
          a.path, a.is_file, a.info, a.created_at {from}{clause} ORDER BY a.created_at DESC LIMIT ? OFFSET ?"
     );
     let mut query = sqlx::query_as::<_, AuditFileRow>(&sql);
@@ -1047,7 +1130,7 @@ pub async fn audit_file(
                 "guid": r.guid,
                 "device_id": r.device_id,
                 "hostname": r.hostname,
-                "group": r.group,
+                "group": r.group_name,
                 "peer_id": r.peer_id,
                 "conn_id": r.conn_id,
                 "type": r.typ,
@@ -1066,7 +1149,7 @@ struct AuditAlarmRow {
     guid: String,
     device_id: String,
     hostname: Option<String>,
-    group: Option<String>,
+    group_name: Option<String>,
     typ: Option<i64>,
     info: String,
     conn_id: Option<i64>,
@@ -1090,7 +1173,7 @@ pub async fn audit_alarm(
     }
     let total = count.fetch_one(&st.db).await?;
     let sql = format!(
-        "SELECT a.guid, a.device_id, d.hostname, st.name AS group, a.typ, a.info, a.conn_id, a.created_at \
+        "SELECT a.guid, a.device_id, d.hostname, st.name AS group_name, a.typ, a.info, a.conn_id, a.created_at \
          {from}{clause} ORDER BY a.created_at DESC LIMIT ? OFFSET ?"
     );
     let mut query = sqlx::query_as::<_, AuditAlarmRow>(&sql);
@@ -1106,7 +1189,7 @@ pub async fn audit_alarm(
                 "guid": r.guid,
                 "device_id": r.device_id,
                 "hostname": r.hostname,
-                "group": r.group,
+                "group": r.group_name,
                 "typ": r.typ,
                 "info": info,
                 "conn_id": r.conn_id,
@@ -1164,7 +1247,7 @@ pub async fn overview(State(st): State<AppState>, user: AuthUser) -> ApiResult<J
         groups_out.push(json!({ "id": row.id, "name": row.name, "devices": total, "online": on }));
     }
     let recent = sqlx::query_as::<_, AuditConnRow>(&format!(
-        "SELECT a.guid, a.device_id, d.hostname, d.group_id, st.name AS group, a.peer_id, a.peer_name, \
+        "SELECT a.guid, a.device_id, d.hostname, d.group_id, st.name AS group_name, a.peer_id, a.peer_name, \
          a.ip, a.conn_type, a.primary_auth, a.two_factor, a.note, a.started_at, a.authed_at, a.closed_at \
          {AUDIT_CONN_FROM} ORDER BY a.started_at DESC LIMIT 10"
     ))

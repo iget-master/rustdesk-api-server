@@ -72,6 +72,27 @@ must "não vê usuários" "$(j "$API/api/users?current=1&pageSize=100" -H "$E")"
 must_code "somente leitura bloqueia edição" "$(code -X PUT "$API/api/ab/peer/update/$GUID" -H "$E" -d "{\"id\":\"$DEV\",\"alias\":\"x\"}")" 403
 must_code "externo não acessa o console" "$(code "$API/admin/api/overview" -H "$E")" 403
 
+echo "== autorização das conexões (hbbs -> API)"
+SECRET=$(j "$API/admin/api/settings" -H "$A" | jq -r .hbbs_secret)
+[ ${#SECRET} -ge 32 ] || die "segredo do hbbs: $SECRET"
+authz() { j -X POST "$API/api/internal/authorize" -H "X-Hbbs-Secret: $SECRET" -d "$1"; }
+must_code "sem o segredo" "$(code -X POST "$API/api/internal/authorize" -d "{\"token\":\"\",\"peer_id\":\"$DEV\"}")" 401
+must "anônimo permitido enquanto o grupo não exige login" "$(authz "{\"token\":\"\",\"peer_id\":\"$DEV\"}")" '.allow==true'
+must "grupo passa a exigir login" "$(j -X PUT "$API/admin/api/groups/$SID" -H "$A" -d '{"require_login":true}')" '.require_login==true'
+must "anônimo recusado" "$(authz "{\"token\":\"\",\"peer_id\":\"$DEV\",\"from\":\"203.0.113.9\"}")" '.allow==false and (.reason|length) > 0'
+must "token inválido recusado" "$(authz "{\"token\":\"nope\",\"peer_id\":\"$DEV\"}")" '.allow==false'
+must "externo com acesso ao grupo permitido" "$(authz "{\"token\":\"$EXT_TOKEN\",\"peer_id\":\"$DEV\"}")" ".allow==true and .user==\"$EXT\""
+must "externo recusado em máquina fora dos seus grupos" "$(authz "{\"token\":\"$EXT_TOKEN\",\"peer_id\":\"000000001\"}")" '.allow==false'
+must "administrador permitido" "$(authz "{\"token\":\"$TOKEN\",\"peer_id\":\"$DEV\"}")" '.allow==true and .user=="'"$RD_USER"'"'
+must "máquina desconhecida sem política" "$(authz "{\"token\":\"\",\"peer_id\":\"000000001\"}")" '.allow==true'
+must "recusas ficam na auditoria" "$(j "$API/admin/api/audit/denied?device=$DEV" -H "$A")" '.total >= 2 and (.data[0].from_ip=="203.0.113.9" or .data[1].from_ip=="203.0.113.9")'
+
+echo "== listagens do console"
+for k in conn file alarm denied; do
+  must "auditoria/$k responde" "$(j "$API/admin/api/audit/$k?group=$SID&limit=5" -H "$A")" 'has("total") and (.data|type)=="array"'
+done
+must "visão geral responde" "$(j "$API/admin/api/overview" -H "$A")" '.devices >= 1 and (.recent|type)=="array" and (.per_group|type)=="array"'
+
 echo "== rotação de senha"
 NEW=$(j -X POST "$API/admin/api/groups/$SID/rotate-password" -H "$A" | jq -r .password)
 [ "$NEW" != "$PASS" ] && [ ${#NEW} -ge 8 ] || die "rotação de senha"
@@ -82,6 +103,7 @@ j "$API/admin/api/groups/$SID/install-script?os=linux" -H "$A" | grep -q "$ENROL
 echo "== derrubar sessão"
 j -X POST "$API/admin/api/users/$UID_/logout" -H "$A" >/dev/null
 must_code "sessão do externo encerrada" "$(code -X POST "$API/api/currentUser" -H "$E" -d '{}')" 401
+must "hbbs passa a recusar o token derrubado" "$(authz "{\"token\":\"$EXT_TOKEN\",\"peer_id\":\"$DEV\"}")" '.allow==false and (.reason|test("sessão"))'
 
 echo "== limpeza"
 j -X DELETE "$API/admin/api/grants" -H "$A" -d "{\"user_id\":$UID_,\"group_id\":$SID}" >/dev/null

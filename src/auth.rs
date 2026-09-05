@@ -37,35 +37,42 @@ impl FromRequestParts<AppState> for AuthUser {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let token = bearer_from_headers(&parts.headers).ok_or_else(ApiError::unauthorized)?;
-        let user = sqlx::query_as::<_, AuthUser>(
-            "SELECT u.*, s.token, s.expires_at AS session_expires_at \
-             FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?",
-        )
-        .bind(&token)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(ApiError::unauthorized)?;
-        if user.user.status != 1 {
-            return Err(ApiError::unauthorized());
-        }
-        let t = now();
-        if user.user.expires_at.is_some_and(|exp| exp <= t) {
-            return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Account expired"));
-        }
-        if user.session_expires_at.is_some_and(|exp| exp <= t) {
-            sqlx::query("DELETE FROM sessions WHERE token = ?")
-                .bind(&token)
-                .execute(&state.db)
-                .await?;
-            return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Session expired"));
-        }
+        let user = lookup_session(&state.db, &token).await?;
         sqlx::query("UPDATE sessions SET last_seen_at = ? WHERE token = ?")
-            .bind(t)
+            .bind(now())
             .bind(&token)
             .execute(&state.db)
             .await?;
         Ok(user)
     }
+}
+
+/// Sessão do token com usuário ativo e dentro das validades; uma sessão vencida é apagada.
+/// Qualquer recusa é 401 (a mensagem diz o motivo).
+pub async fn lookup_session(db: &Db, token: &str) -> ApiResult<AuthUser> {
+    let user = sqlx::query_as::<_, AuthUser>(
+        "SELECT u.*, s.token, s.expires_at AS session_expires_at \
+         FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?",
+    )
+    .bind(token)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(ApiError::unauthorized)?;
+    if user.user.status != 1 {
+        return Err(ApiError::unauthorized());
+    }
+    let t = now();
+    if user.user.expires_at.is_some_and(|exp| exp <= t) {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Account expired"));
+    }
+    if user.session_expires_at.is_some_and(|exp| exp <= t) {
+        sqlx::query("DELETE FROM sessions WHERE token = ?")
+            .bind(token)
+            .execute(db)
+            .await?;
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Session expired"));
+    }
+    Ok(user)
 }
 
 pub fn bearer_from_headers(headers: &HeaderMap) -> Option<String> {

@@ -105,7 +105,40 @@ rustdesk-api health
   uso único. Senhas com argon2id, tokens de 256 bits.
 - A senha do grupo viaja para o cliente de quem tem acesso ao address book (é assim que o cliente
   conecta sem pedir). Ao encerrar um terceiro, **rotacione a senha do grupo** (Grupos → rotacionar)
-  e reaplique nas máquinas com o script.
+  e reaplique nas máquinas com o script — ou, melhor, ligue a autorização pelo hbbs abaixo.
+
+## Autorização das conexões pelo hbbs
+
+A senha da máquina é conferida pela própria máquina, mas **quem decide se a conexão acontece é o
+hbbs**: sem punch hole nem relay não há sessão. Todo pedido de conexão leva ao hbbs o token de
+login do usuário (por isso o cliente exige o `secure_tcp`), e o hbbs deste fork pode consultar esta
+API antes de intermediar:
+
+- sem token válido, só máquinas de grupos **sem** "exigir login";
+- equipe e administradores logados: todas as máquinas;
+- externos: só as máquinas dos grupos concedidos, com o acesso dentro da validade.
+
+Resultado: uma senha copiada não serve sem sessão válida. Sessão vencida ou *Derrubar sessões* no
+console = nenhuma conexão nova, na hora. As recusas ficam em **Auditoria → Recusadas**, com IP,
+usuário e motivo; o cliente vê o motivo na tela.
+
+Para ligar:
+
+1. No hbbs (fork [iget-master/rustdesk-server](https://github.com/iget-master/rustdesk-server)),
+   defina as variáveis mostradas em **Configurações → Integração com o hbbs** e reinicie-o:
+   ```yaml
+   environment:
+     - API_AUTH_URL=http://127.0.0.1:21114/api/internal/authorize
+     - API_AUTH_SECRET=<segredo de Configurações>
+   ```
+2. Em cada grupo que deve ficar fechado, marque **Política de conexão → Exigir login para
+   conectar**. Os demais grupos continuam como antes.
+
+Limites: a checagem é feita ao abrir a conexão (uma sessão já aberta não cai quando o token vence);
+acesso por IP direto não passa pelo hbbs (`direct-server` vem desligado — dá para forçar `N` nas
+opções do grupo); todo mundo que conecta nesses grupos precisa estar logado no cliente, inclusive
+o celular. Se o hbbs não consegue falar com a API, ele recusa as conexões (`API_AUTH_FAIL_OPEN=Y`
+inverte isso).
 
 ## Desenvolvimento
 

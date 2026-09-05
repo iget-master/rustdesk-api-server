@@ -2,6 +2,7 @@ pub mod ab;
 pub mod account;
 pub mod admin;
 pub mod audit;
+pub mod authorize;
 pub mod device;
 pub mod group;
 
@@ -57,6 +58,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/audit/file", post(audit::file))
         .route("/api/audit/alarm", post(audit::alarm))
         .route("/api/audit", put(audit::note))
+        // hbbs (fork) pergunta se pode intermediar uma conexão
+        .route("/api/internal/authorize", post(authorize::authorize))
         // console
         .nest("/admin/api", admin::router())
         .fallback(not_found)

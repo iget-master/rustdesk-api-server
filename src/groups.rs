@@ -176,6 +176,15 @@ pub async fn set_note(db: &Db, id: i64, note: &str) -> ApiResult<()> {
     Ok(())
 }
 
+pub async fn set_require_login(db: &Db, id: i64, require: bool) -> ApiResult<()> {
+    sqlx::query("UPDATE groups SET require_login = ? WHERE id = ?")
+        .bind(i64::from(require))
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 /// Troca a senha do grupo e a espelha nos peers do address book compartilhado.
 /// A senha permanente de cada máquina continua sendo gravada nela (`rustdesk --password`).
 pub async fn set_password(db: &Db, id: i64, password: &str) -> ApiResult<()> {

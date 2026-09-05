@@ -211,6 +211,8 @@ pub struct GroupRow {
     pub note: String,
     pub enroll_token: String,
     pub created_at: i64,
+    /// 1 = o hbbs só intermedeia conexões de usuários logados com acesso ao grupo.
+    pub require_login: i64,
 }
 
 impl GroupRow {

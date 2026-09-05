@@ -253,7 +253,7 @@ async function pageGroups(main, id) {
     el('p', { class: 'hint' }, 'Cada grupo tem uma senha permanente única (gravada nas máquinas pelo script de instalação) e um address book compartilhado mantido pelo console com as máquinas do grupo e essa senha. Quem tem acesso ao grupo conecta sem digitar senha e sem pedir permissão.'),
     form,
     table(['Grupo', 'Máquinas', 'Online', 'Acessos', 'Nota', ''], groups.map(s => [
-      el('a', { href: '#/grupos/' + s.id }, s.name), s.devices, el('span', {}, el('span', { class: 'dot' + (s.online ? ' on' : '') }), s.online),
+      el('span', {}, el('a', { href: '#/grupos/' + s.id }, s.name), s.require_login ? [' ', tag('exige login', 'accent')] : ''), s.devices, el('span', {}, el('span', { class: 'dot' + (s.online ? ' on' : '') }), s.online),
       s.grants.length, s.note || '', el('a', { href: '#/grupos/' + s.id }, 'abrir')]), 'Nenhum grupo ainda.'));
 }
 
@@ -281,6 +281,13 @@ async function pageGroup(main, id) {
       el('button', { class: 'small', onclick: async () => { const n = prompt('Nova senha (em branco cancela):'); if (!n) return; try { await api('/admin/api/groups/' + id, { method: 'PUT', body: { password: n } }); toast('Senha alterada — atualize as máquinas'); reload(); } catch (e) { fail(e); } } }, 'definir'), ' ',
       el('button', { class: 'small', onclick: async () => { if (!confirm('Gerar uma senha nova? As máquinas do grupo precisarão rodar o script de instalação de novo (ou `rustdesk --password`).')) return; try { const r = await api('/admin/api/groups/' + id + '/rotate-password', { method: 'POST' }); dialog(el('h2', { style: 'margin-top:0' }, 'Nova senha do grupo'), el('div', { class: 'code', style: 'font-size:24px;letter-spacing:.08em' }, r.password), el('p', { class: 'hint' }, 'Já está no address book do grupo. Aplique nas máquinas com o script de instalação ou `rustdesk --password`.')); reload(); } catch (e) { fail(e); } } }, 'rotacionar')),
     el('p', { class: 'hint' }, 'É a senha que o script grava em cada máquina (`rustdesk --password`) e que o address book do grupo entrega aos clientes autorizados. Trocar aqui atualiza o address book na hora; nas máquinas, só com o script.'));
+
+  // política de conexão (o hbbs consulta a API antes de intermediar)
+  const reqLogin = el('input', { type: 'checkbox', checked: !!s.require_login });
+  const policyCard = el('div', { class: 'form' }, el('h2', { style: 'margin-top:0' }, 'Política de conexão'),
+    el('label', {}, reqLogin, ' Exigir login para conectar: o hbbs só intermedeia conexões de quem está logado no RustDesk e tem acesso a este grupo'),
+    el('p', { class: 'hint' }, 'Com isso uma senha copiada não serve sem sessão válida: sessão vencida ou derrubada no console = sem conexão nova. Depende do hbbs deste projeto configurado com a URL e o segredo de Configurações; sem isso a opção não tem efeito. Acesso por IP direto não passa pelo hbbs — deixe "direct-server" desligado nas máquinas (é o padrão).'),
+    el('button', { class: 'primary', onclick: async () => { try { await api('/admin/api/groups/' + id, { method: 'PUT', body: { require_login: reqLogin.checked } }); toast('Política salva'); reload(); } catch (e) { fail(e); } } }, 'Salvar'));
 
   // opções (strategy)
   const opts = s.options || {};
@@ -329,7 +336,7 @@ async function pageGroup(main, id) {
     el('div', { style: 'margin-top:8px' }, el('button', { onclick: () => copyText(scriptBox.value) }, 'Copiar script')));
   loadScript();
 
-  main.replaceChildren(header, pwCard, optCard, devCard, grantCard, scriptCard);
+  main.replaceChildren(header, pwCard, policyCard, optCard, devCard, grantCard, scriptCard);
 }
 
 // ---------------------------------------------------------------- dispositivos
@@ -433,10 +440,11 @@ async function pageAudit(main) {
     let t;
     if (kind === 'conn') t = connTable(rows);
     else if (kind === 'file') t = table(['Quando', 'Grupo', 'Máquina', 'Direção', 'Caminho', 'Arquivos'], rows.map(x => [fmtTs(x.created_at), x.group || '—', el('span', {}, x.hostname || '', ' ', el('span', { class: 'mono muted' }, x.device_id)), x.type === 0 ? 'saiu da máquina' : 'entrou na máquina', el('span', { class: 'mono' }, x.path), typeof x.info === 'object' && x.info ? `${x.info.num ?? ''} arquivo(s)` + (x.info.files ? ': ' + x.info.files.map(f => f[0]).join(', ') : '') : String(x.info)]), 'Nenhuma transferência registrada.');
+    else if (kind === 'denied') t = table(['Quando', 'Grupo', 'Máquina', 'Quem tentou', 'De (IP)', 'Motivo'], rows.map(x => [fmtTs(x.at), x.group || '—', el('span', {}, x.hostname || '', ' ', el('span', { class: 'mono muted' }, x.peer_id)), x.user_name ? el('span', { class: 'mono' }, x.user_name) : el('span', { class: 'muted' }, 'sem login'), el('span', { class: 'mono' }, x.from_ip || '—'), x.reason]), 'Nenhuma conexão recusada.');
     else t = table(['Quando', 'Grupo', 'Máquina', 'Alarme', 'Detalhes'], rows.map(x => [fmtTs(x.created_at), x.group || '—', el('span', {}, x.hostname || '', ' ', el('span', { class: 'mono muted' }, x.device_id)), tag(ALARMS[x.typ] || ('tipo ' + x.typ), 'bad'), el('span', { class: 'mono' }, typeof x.info === 'object' ? JSON.stringify(x.info) : String(x.info))]), 'Nenhum alarme.');
     list.replaceChildren(el('p', { class: 'muted' }, `${rows.length} de ${r.total}`), t, rows.length < r.total ? more : '');
   };
-  const tabs = el('div', { class: 'tabs' }, [['conn', 'Conexões'], ['file', 'Arquivos'], ['alarm', 'Alarmes']].map(([k, label]) => el('button', { class: k === kind ? 'on' : '', onclick: e => { kind = k; tabs.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === e.target)); load(); } }, label)));
+  const tabs = el('div', { class: 'tabs' }, [['conn', 'Conexões'], ['file', 'Arquivos'], ['alarm', 'Alarmes'], ['denied', 'Recusadas']].map(([k, label]) => el('button', { class: k === kind ? 'on' : '', onclick: e => { kind = k; tabs.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === e.target)); load(); } }, label)));
   stSel.onchange = () => load(); devIn.addEventListener('input', () => { clearTimeout(devIn._t); devIn._t = setTimeout(() => load(), 300); }); sinceIn.onchange = () => load();
   main.replaceChildren(el('h1', {}, 'Auditoria'), tabs, el('div', { class: 'row', style: 'margin-bottom:12px' }, field('Grupo', stSel), field('Máquina', devIn), field('Desde', sinceIn)), list);
   await load();
@@ -447,10 +455,17 @@ async function pageConfig(main) {
   const s = await api('/admin/api/settings');
   const f = { server_host: el('input', { value: s.server_host, placeholder: 'rustdesk.exemplo.com.br' }), server_key: el('input', { value: s.server_key, placeholder: 'conteúdo de id_ed25519.pub' }), api_url: el('input', { value: s.api_url || location.origin, placeholder: location.origin }), download_url: el('input', { value: s.download_url, placeholder: 'https://github.com/rustdesk/rustdesk/releases/download/…/rustdesk-…-x86_64.exe' }) };
   Object.values(f).forEach(i => i.style.width = '100%');
+  const envText = `API_AUTH_URL=http://127.0.0.1:${location.port || 21114}/api/internal/authorize\nAPI_AUTH_SECRET=${s.hbbs_secret}`;
+  const hbbsCard = el('div', { class: 'form', style: 'max-width:720px;margin-top:16px' }, el('h2', { style: 'margin-top:0' }, 'Integração com o hbbs (autorização das conexões)'),
+    el('p', { class: 'hint' }, 'Nos grupos com "exigir login", o hbbs consulta esta API antes de intermediar cada conexão e recusa quem não está logado ou não tem acesso. Precisa do hbbs do fork iget-master/rustdesk-server com estas variáveis de ambiente (ajuste o host/porta se a API não roda na mesma máquina):'),
+    el('pre', { class: 'mono', style: 'white-space:pre-wrap;user-select:all' }, envText),
+    el('button', { class: 'small', onclick: () => copyText(envText) }, 'copiar'),
+    el('p', { class: 'hint' }, 'Por padrão o hbbs recusa conexões quando não consegue falar com a API (API_AUTH_FAIL_OPEN=Y inverte isso). As recusas aparecem em Auditoria → Recusadas.'));
   main.replaceChildren(el('h1', {}, 'Configurações'),
     el('p', { class: 'hint' }, 'Usadas para gerar o script de instalação dos grupos. O servidor de ID e a chave são os do seu hbbs; a URL da API é como as máquinas alcançam este console.'),
     el('div', { class: 'form', style: 'max-width:720px' }, field('Servidor de ID (hbbs)', f.server_host), field('Chave pública do servidor (Key)', f.server_key), field('URL da API', f.api_url), field('Link do instalador do RustDesk (Windows .exe)', f.download_url),
-      el('div', { style: 'margin-top:12px' }, el('button', { class: 'primary', onclick: async () => { try { await api('/admin/api/settings', { method: 'PUT', body: Object.fromEntries(Object.entries(f).map(([k, i]) => [k, i.value])) }); toast('Salvo'); } catch (e) { fail(e); } } }, 'Salvar'))));
+      el('div', { style: 'margin-top:12px' }, el('button', { class: 'primary', onclick: async () => { try { await api('/admin/api/settings', { method: 'PUT', body: Object.fromEntries(Object.entries(f).map(([k, i]) => [k, i.value])) }); toast('Salvo'); } catch (e) { fail(e); } } }, 'Salvar'))),
+    hbbsCard);
 }
 
 boot();

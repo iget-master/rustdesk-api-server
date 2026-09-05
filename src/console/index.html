@@ -65,6 +65,8 @@ dialog input:not([type=checkbox]), dialog select { width: 100%; }
 .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
 .tabs button.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 .help { position: relative; display: inline-block; vertical-align: middle; margin-left: 6px; }
+h1:has(.help), h2:has(.help) { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+h1:has(.help) .help, h2:has(.help) .help { margin-left: 0; }
 .help-btn { width: 20px; height: 20px; padding: 0; border-radius: 50%; font-size: 12px; font-weight: 700; line-height: 18px; text-align: center; color: var(--accent); border-color: var(--accent); background: var(--surface); }
 .help-tip { display: none; position: fixed; z-index: 40; width: min(340px, calc(100vw - 16px)); padding: 10px 12px; background: var(--ink); color: var(--bg); border-radius: 8px; font: 400 13px/1.45 system-ui, "Segoe UI", Roboto, sans-serif; text-transform: none; letter-spacing: 0; white-space: normal; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
 .help:hover .help-tip, .help.open .help-tip, .help-btn:focus-visible + .help-tip { display: block; }

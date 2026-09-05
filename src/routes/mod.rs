@@ -1,9 +1,11 @@
 pub mod ab;
 pub mod account;
+pub mod admin;
 pub mod audit;
 pub mod device;
 pub mod group;
 
+use axum::response::Html;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use tower_http::cors::CorsLayer;
@@ -15,7 +17,10 @@ use crate::AppState;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/", get(root))
+        // console web (embutido no binário)
+        .route("/", get(console))
+        .route("/console", get(console))
+        .route("/console/", get(console))
         .route("/healthz", get(|| async { "ok" }))
         // conta
         .route("/api/login-options", get(account::login_options))
@@ -45,12 +50,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/switch-grant", post(device::switch_grant))
         .route("/api/devices/deploy", post(device::deploy))
         .route("/api/devices/cli", post(device::cli_assign))
+        .route("/api/enroll", post(device::enroll))
         // auditoria
         .route("/api/audit/conn", post(audit::conn))
         .route("/api/audit/conn/active", get(audit::conn_active))
         .route("/api/audit/file", post(audit::file))
         .route("/api/audit/alarm", post(audit::alarm))
         .route("/api/audit", put(audit::note))
+        // console
+        .nest("/admin/api", admin::router())
         .fallback(not_found)
         .layer(
             TraceLayer::new_for_http()
@@ -61,8 +69,8 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn root() -> String {
-    format!("rustdesk-api-server {}", env!("CARGO_PKG_VERSION"))
+async fn console() -> Html<&'static str> {
+    Html(include_str!("../console/index.html"))
 }
 
 /// 404 rápido: o cliente RustDesk usa 404 como "recurso não suportado" e segue em frente.

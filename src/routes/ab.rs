@@ -33,14 +33,20 @@ async fn access(db: &Db, user: &AuthUser, guid: &str) -> ApiResult<(AbRow, i64)>
     if ab.is_personal != 0 {
         return Err(ApiError::forbidden());
     }
-    let rule: Option<i64> =
-        sqlx::query_scalar("SELECT rule FROM address_book_shares WHERE ab_guid = ? AND user_id = ?")
-            .bind(guid)
-            .bind(user.user.id)
-            .fetch_optional(db)
-            .await?;
-    match rule {
-        Some(r) if r >= RULE_READ => Ok((ab, r)),
+    if user.user.is_admin != 0 {
+        return Ok((ab, RULE_FULL));
+    }
+    let share: Option<(i64, Option<i64>)> = sqlx::query_as(
+        "SELECT rule, expires_at FROM address_book_shares WHERE ab_guid = ? AND user_id = ?",
+    )
+    .bind(guid)
+    .bind(user.user.id)
+    .fetch_optional(db)
+    .await?;
+    match share {
+        Some((r, expires_at)) if r >= RULE_READ && expires_at.map_or(true, |e| e > now()) => {
+            Ok((ab, r))
+        }
         _ => Err(ApiError::forbidden()),
     }
 }
@@ -101,22 +107,32 @@ pub async fn shared_profiles(
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
     let page = Page::from_query(&q);
+    let uid = user.user.id;
+    let admin = i64::from(user.user.is_admin != 0);
+    let t = now();
+    // Dono ou administrador: controle total; os demais pelo compartilhamento ainda válido.
     let filter = "FROM address_books ab JOIN users o ON o.id = ab.owner_id \
         LEFT JOIN address_book_shares sh ON sh.ab_guid = ab.guid AND sh.user_id = ? \
-        WHERE ab.is_personal = 0 AND (ab.owner_id = ? OR sh.rule >= 1)";
+        WHERE ab.is_personal = 0 AND (ab.owner_id = ? OR ? = 1 \
+          OR (sh.rule >= 1 AND (sh.expires_at IS NULL OR sh.expires_at > ?)))";
     let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) {filter}"))
-        .bind(user.user.id)
-        .bind(user.user.id)
+        .bind(uid)
+        .bind(uid)
+        .bind(admin)
+        .bind(t)
         .fetch_one(&st.db)
         .await?;
     let rows = sqlx::query_as::<_, ProfileRow>(&format!(
         "SELECT ab.guid, ab.name, o.name AS owner, ab.note, \
-         CASE WHEN ab.owner_id = ? THEN 3 ELSE sh.rule END AS rule {filter} \
+         CASE WHEN ab.owner_id = ? OR ? = 1 THEN 3 ELSE sh.rule END AS rule {filter} \
          ORDER BY ab.name LIMIT ? OFFSET ?"
     ))
-    .bind(user.user.id)
-    .bind(user.user.id)
-    .bind(user.user.id)
+    .bind(uid)
+    .bind(admin)
+    .bind(uid)
+    .bind(uid)
+    .bind(admin)
+    .bind(t)
     .bind(page.size)
     .bind(page.offset)
     .fetch_all(&st.db)

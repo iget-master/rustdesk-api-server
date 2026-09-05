@@ -3,13 +3,14 @@ use argon2::Argon2;
 use axum::extract::FromRequestParts;
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use rand::RngCore;
+use serde_json::Value;
 
-use crate::db::now;
-use crate::error::ApiError;
+use crate::db::{now, Db};
+use crate::error::{ApiError, ApiResult};
 use crate::models::UserRow;
-use crate::util::hex;
+use crate::util::{hex, s};
 use crate::AppState;
 
 /// Usuário autenticado por `Authorization: Bearer <token>`.
@@ -18,6 +19,7 @@ pub struct AuthUser {
     #[sqlx(flatten)]
     pub user: UserRow,
     pub token: String,
+    pub session_expires_at: Option<i64>,
 }
 
 impl AuthUser {
@@ -36,7 +38,8 @@ impl FromRequestParts<AppState> for AuthUser {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let token = bearer_from_headers(&parts.headers).ok_or_else(ApiError::unauthorized)?;
         let user = sqlx::query_as::<_, AuthUser>(
-            "SELECT u.*, s.token FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?",
+            "SELECT u.*, s.token, s.expires_at AS session_expires_at \
+             FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?",
         )
         .bind(&token)
         .fetch_optional(&state.db)
@@ -45,8 +48,19 @@ impl FromRequestParts<AppState> for AuthUser {
         if user.user.status != 1 {
             return Err(ApiError::unauthorized());
         }
+        let t = now();
+        if user.user.expires_at.is_some_and(|exp| exp <= t) {
+            return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Account expired"));
+        }
+        if user.session_expires_at.is_some_and(|exp| exp <= t) {
+            sqlx::query("DELETE FROM sessions WHERE token = ?")
+                .bind(&token)
+                .execute(&state.db)
+                .await?;
+            return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Session expired"));
+        }
         sqlx::query("UPDATE sessions SET last_seen_at = ? WHERE token = ?")
-            .bind(now())
+            .bind(t)
             .bind(&token)
             .execute(&state.db)
             .await?;
@@ -68,6 +82,32 @@ pub fn new_token() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex(&bytes)
+}
+
+/// Cria a sessão de um login aprovado; `v` é o corpo do `/api/login` (id, uuid, deviceInfo).
+/// A validade vem de `users.session_hours` (0 = sem validade).
+pub async fn create_session(db: &Db, user: &UserRow, v: &Value) -> ApiResult<String> {
+    let token = new_token();
+    let dev = v.get("deviceInfo").cloned().unwrap_or(Value::Null);
+    let t = now();
+    let expires_at = (user.session_hours > 0).then(|| t + user.session_hours * 3600);
+    sqlx::query(
+        "INSERT INTO sessions (token, user_id, device_id, device_uuid, device_os, device_name, device_type, \
+         created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&token)
+    .bind(user.id)
+    .bind(s(v, "id"))
+    .bind(s(v, "uuid"))
+    .bind(s(&dev, "os"))
+    .bind(s(&dev, "name"))
+    .bind(s(&dev, "type"))
+    .bind(t)
+    .bind(t)
+    .bind(expires_at)
+    .execute(db)
+    .await?;
+    Ok(token)
 }
 
 pub async fn hash_password(password: String) -> anyhow::Result<String> {

@@ -94,11 +94,12 @@ pub async fn create_user(
     admin: bool,
     display_name: &str,
     email: &str,
+    kind: &str,
 ) -> anyhow::Result<i64> {
     let hash = auth::hash_password(password.to_owned()).await?;
     let res = sqlx::query(
-        "INSERT INTO users (name, display_name, email, note, password_hash, status, is_admin, created_at) \
-         VALUES (?, ?, ?, '', ?, 1, ?, ?)",
+        "INSERT INTO users (name, display_name, email, note, password_hash, status, is_admin, created_at, kind) \
+         VALUES (?, ?, ?, '', ?, 1, ?, ?, ?)",
     )
     .bind(name)
     .bind(display_name)
@@ -106,6 +107,7 @@ pub async fn create_user(
     .bind(hash)
     .bind(i64::from(admin))
     .bind(now())
+    .bind(kind)
     .execute(db)
     .await?;
     Ok(res.last_insert_rowid())
@@ -127,7 +129,7 @@ pub async fn bootstrap_admin(db: &Db) -> anyhow::Result<()> {
         return Ok(());
     }
     let name = std::env::var("RUSTDESK_API_ADMIN_USER").unwrap_or_else(|_| "admin".to_owned());
-    create_user(db, &name, &password, true, "", "").await?;
+    create_user(db, &name, &password, true, "", "", "staff").await?;
     tracing::info!(user = %name, "usuário administrador inicial criado");
     Ok(())
 }
@@ -164,7 +166,7 @@ pub async fn user(db: &Db, cmd: UserCmd) -> anyhow::Result<()> {
             email,
         } => {
             let (password, generated) = password_or_generate(password);
-            create_user(db, &name, &password, admin, &display_name, &email).await?;
+            create_user(db, &name, &password, admin, &display_name, &email, "staff").await?;
             if generated {
                 println!("usuário '{name}' criado com a senha: {password}");
             } else {
@@ -386,11 +388,8 @@ pub async fn device(db: &Db, cmd: DeviceCmd) -> anyhow::Result<()> {
                     .await?;
             }
             if let Some(g) = group {
-                sqlx::query("UPDATE devices SET device_group = ? WHERE id = ?")
-                    .bind(g)
-                    .bind(&id)
-                    .execute(db)
-                    .await?;
+                let group = crate::groups::find_or_create_by_name(db, &g).await?;
+                crate::groups::assign_device(db, &id, Some(group.id)).await?;
             }
             if let Some(n) = note {
                 sqlx::query("UPDATE devices SET note = ? WHERE id = ?")

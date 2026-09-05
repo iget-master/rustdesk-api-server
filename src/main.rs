@@ -4,6 +4,7 @@ mod db;
 mod error;
 mod models;
 mod routes;
+mod groups;
 mod util;
 
 use clap::{Parser, Subcommand};

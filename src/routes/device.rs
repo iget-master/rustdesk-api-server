@@ -7,13 +7,15 @@ use serde_json::{json, Value};
 use crate::auth::AuthUser;
 use crate::db::{now, Db};
 use crate::error::{ApiError, ApiResult};
-use crate::models::platform_from_os;
 use crate::routes::ab::{ensure_tag, upsert_peer};
-use crate::util::{opt_s, parse_value, s};
+use crate::groups;
+use crate::util::{i, opt_s, parse_value, s};
 use crate::AppState;
 
 /// `POST /api/heartbeat` — chega a cada 15 s (3 s com sessões ativas), sem token.
 /// Se ainda não temos o sysinfo deste ID (banco novo, por exemplo), pedimos com `sysinfo: true`.
+/// Se o dispositivo pertence a um grupo cujas opções mudaram desde o `modified_at` que o
+/// cliente conhece, devolve o `strategy` com as `config_options` do grupo.
 pub async fn heartbeat(State(st): State<AppState>, body: Bytes) -> ApiResult<Json<Value>> {
     let v = parse_value(&body)?;
     let id = s(&v, "id");
@@ -48,6 +50,20 @@ pub async fn heartbeat(State(st): State<AppState>, body: Bytes) -> ApiResult<Jso
     let mut resp = json!({});
     if has_sysinfo != Some(1) {
         resp["sysinfo"] = json!(true);
+    }
+    let strategy: Option<(String, i64)> = sqlx::query_as(
+        "SELECT st.options, st.options_updated_at FROM devices d \
+         JOIN groups st ON st.id = d.group_id WHERE d.id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&st.db)
+    .await?;
+    if let Some((options, updated_at)) = strategy {
+        if updated_at > 0 && i(&v, "modified_at") != Some(updated_at) {
+            let options: Value = serde_json::from_str(&options).unwrap_or_else(|_| json!({}));
+            resp["modified_at"] = json!(updated_at);
+            resp["strategy"] = json!({ "config_options": options });
+        }
     }
     Ok(Json(resp))
 }
@@ -97,8 +113,34 @@ pub async fn sysinfo(State(st): State<AppState>, body: Bytes) -> ApiResult<&'sta
         device_name: None,
     };
     apply_assignment(&st.db, &id, &assignment, false).await?;
+    // O hostname/usuário podem ter mudado: reflete no address book do grupo.
+    let group: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT group_id FROM devices WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&st.db)
+            .await?;
+    if let Some(Some(group_id)) = group {
+        groups::sync_ab(&st.db, group_id).await?;
+    }
     tracing::info!(device = %id, hostname = %s(&v, "hostname"), "sysinfo atualizado");
     Ok("SYSINFO_UPDATED")
+}
+
+/// `POST /api/enroll` — usado pelo script de instalação do grupo: `{token, id, uuid?, hostname?}`.
+pub async fn enroll(State(st): State<AppState>, body: Bytes) -> ApiResult<Json<Value>> {
+    let v = parse_value(&body)?;
+    let token = s(&v, "token");
+    let id = s(&v, "id").trim().to_owned();
+    if token.is_empty() || id.is_empty() {
+        return Err(ApiError::bad_request("token and id are required"));
+    }
+    let Some(group) = groups::by_enroll_token(&st.db, &token).await? else {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "Invalid enrollment token"));
+    };
+    groups::ensure_device(&st.db, &id, &s(&v, "uuid"), &s(&v, "hostname")).await?;
+    groups::assign_device(&st.db, &id, Some(group.id)).await?;
+    tracing::info!(device = %id, group = %group.name, "dispositivo matriculado no grupo");
+    Ok(Json(json!({ "result": "OK", "group": group.name })))
 }
 
 /// `POST /api/switch-grant` — sem a chave pública do dispositivo (fica no hbbs) não há como
@@ -124,18 +166,7 @@ pub async fn cli_assign(
     if id.is_empty() {
         return Err(ApiError::bad_request("id is required"));
     }
-    let t = now();
-    sqlx::query(
-        "INSERT INTO devices (id, uuid, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?) \
-         ON CONFLICT(id) DO UPDATE SET \
-           uuid = CASE WHEN excluded.uuid = '' THEN devices.uuid ELSE excluded.uuid END",
-    )
-    .bind(&id)
-    .bind(s(&v, "uuid"))
-    .bind(t)
-    .bind(t)
-    .execute(&st.db)
-    .await?;
+    groups::ensure_device(&st.db, &id, &s(&v, "uuid"), "").await?;
     let assignment = Assignment {
         user_name: opt_s(&v, "user_name"),
         group: opt_s(&v, "device_group_name"),
@@ -173,7 +204,8 @@ fn non_empty(v: &Option<String>) -> Option<&str> {
 
 /// `strict` (CLI/--assign): usuário inexistente é erro e a atribuição sobrescreve a atual.
 /// Não-strict (presets do sysinfo): usuário desconhecido é ignorado, dono já definido é mantido
-/// e o peer só entra no address book se ainda não estiver lá (não clobbera edições do usuário).
+/// e o peer só entra no address book pessoal se ainda não estiver lá (não clobbera edições).
+/// O grupo é sempre um grupo: cria o grupo se não existir e move o dispositivo para ele.
 pub async fn apply_assignment(
     db: &Db,
     device_id: &str,
@@ -203,11 +235,8 @@ pub async fn apply_assignment(
         sqlx::query(sql).bind(uid).bind(device_id).execute(db).await?;
     }
     if let Some(g) = non_empty(&a.group) {
-        sqlx::query("UPDATE devices SET device_group = ? WHERE id = ?")
-            .bind(g)
-            .bind(device_id)
-            .execute(db)
-            .await?;
+        let group = groups::find_or_create_by_name(db, g).await?;
+        groups::assign_device(db, device_id, Some(group.id)).await?;
     }
     if let Some(n) = non_empty(&a.note) {
         sqlx::query("UPDATE devices SET note = ? WHERE id = ?")
@@ -302,7 +331,7 @@ pub async fn apply_assignment(
         "id": device_id,
         "username": username,
         "hostname": hostname,
-        "platform": platform_from_os(&os),
+        "platform": crate::models::platform_from_os(&os),
         "alias": non_empty(&a.ab_alias).unwrap_or(""),
         "tags": tags,
         "note": non_empty(&a.ab_note).unwrap_or(""),

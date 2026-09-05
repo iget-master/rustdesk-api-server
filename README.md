@@ -1,102 +1,91 @@
 # rustdesk-api-server
 
-Servidor de API mínimo, em **Rust + SQLite**, que implementa o que o cliente RustDesk pede por HTTP:
-login, address book (pessoal e compartilhado), aba **Grupo**, inventário via heartbeat/sysinfo e
-auditoria de conexões. É o papel que o *RustDesk Server Pro* cumpre — o `rustdesk-server`
-open-source (hbbs/hbbr) **não** implementa nenhum desses endpoints, e este projeto **não substitui
-o hbbs/hbbr**: ele roda ao lado deles.
+Servidor de API + **console web** para uma rede de máquinas RustDesk auto-hospedada, em
+**Rust + SQLite**, num único binário e num único container. Implementa o que o cliente RustDesk
+pede por HTTP (login, address book, aba Grupo, inventário via heartbeat/sysinfo, auditoria) — o
+papel que o *RustDesk Server Pro* cumpre — e, por cima disso, um console para organizar as máquinas
+em **grupos**, dar acesso direto à equipe e acesso sob demanda a terceiros.
 
-O contrato implementado foi levantado direto do código do cliente; veja
-[`docs/rustdesk-api-endpoints.md`](docs/rustdesk-api-endpoints.md).
+Roda ao lado do `rustdesk-server` (hbbs/hbbr) e **não o substitui**. Para usar chave no hbbs junto
+com login de conta, é preciso o hbbs deste fork:
+[iget-master/rustdesk-server](https://github.com/iget-master/rustdesk-server) (o OSS original não
+implementa o handshake `secure_tcp` que o cliente exige nessa combinação).
 
-## O que funciona
+O contrato do cliente está em [`docs/rustdesk-api-endpoints.md`](docs/rustdesk-api-endpoints.md).
 
-| Área | Endpoints | Comportamento |
-|---|---|---|
-| Conta | `GET /api/login-options`, `POST /api/login`, `POST /api/currentUser`, `POST /api/logout` | usuário + senha (argon2); token Bearer opaco guardado em `sessions`; sem OIDC/2FA (`login-options` devolve `[]`) |
-| Address book | `POST /api/ab/personal`, `ab/settings`, `ab/shared/profiles`, `ab/peers`, `ab/tags/{guid}` e as mutações `peer/add`, `peer/update`, `peer/{guid}` (DELETE), `tag/add`, `tag/rename`, `tag/update`, `tag/{guid}` (DELETE) | formato atual (vários ABs); AB pessoal criado no primeiro acesso; compartilhados criados pela CLI com regra leitura / leitura-escrita / controle total |
-| Aba Grupo | `GET /api/users`, `GET /api/peers`, `GET /api/device-group/accessible` | todos os usuários ativos veem todos os dispositivos (instalação de um inquilino); dono e grupo vêm da atribuição (`preset-*`, `--assign` ou CLI) |
-| Dispositivos | `POST /api/heartbeat`, `POST /api/sysinfo` | inventário (host, usuário do SO, SO, CPU, memória, versão); responde `{"sysinfo": true}` quando ainda não conhece o ID; aplica os campos `preset-*` de instalações pré-configuradas |
-| Auditoria | `POST /api/audit/conn`, `audit/file`, `audit/alarm`, `GET /api/audit/conn/active`, `PUT /api/audit` | registros por conexão, arquivos e alarmes; dedup por `nonce`; notas de fim de sessão |
-| Provisionamento | `POST /api/devices/cli` (`rustdesk --assign`), `POST /api/devices/deploy` | `--assign` com token de admin atribui usuário/grupo/AB; `deploy` responde `NOT_ENABLED` (o hbbs OSS não exige deploy) |
-| Outros | `POST /api/switch-grant` | aceito sem verificação (sem a chave do dispositivo, que fica no hbbs, não há como validar; é inerte com o hbbs OSS) |
+## O que resolve
 
-Tudo o que não está na tabela responde **404** — o cliente foi escrito para conviver com isso
-(OIDC, address book legado `/api/ab`, `/api/ab/get`, upload de gravação).
+| Objetivo | Como |
+|---|---|
+| Agrupar as máquinas por unidade (posto, loja, filial…) | **Grupos**: cada grupo tem um script de instalação que configura o RustDesk, grava a senha permanente do grupo e matricula a máquina nele (`/api/enroll`). O grupo aparece com esse nome na aba *Grupo* dos clientes. |
+| Equipe de TI entrar direto, sem senha e sem pedir permissão | O grupo tem **uma senha permanente única**, gravada nas máquinas e guardada no **address book compartilhado do grupo**, mantido pelo console. Administradores e quem tem acesso ao grupo conectam com um clique: o cliente usa a senha do address book e as máquinas ficam em `approve-mode=password`, empurrado pelo heartbeat. |
+| Terceiro (suporte do ERP/PDV) com acesso limitado e temporário | Usuário **externo** com acesso só ao grupo (somente leitura), **código de acesso** emitido no console na hora do login (uso único, validade em minutos) e **sessão que expira** em X horas. Vencida, o cliente dele perde o address book. |
 
 ## Subindo em produção (Docker)
 
-Pré-requisito: um `rustdesk-server` (hbbs/hbbr) já no ar. O container só precisa da porta
-**21114/tcp** aberta — é a porta que o cliente deduz a partir do *ID server* (21116 − 2).
-
 ```bash
-# no servidor, dentro da pasta server/
-export RUSTDESK_API_ADMIN_PASSWORD='uma-senha-forte'   # usada só na 1ª subida
-docker compose up -d --build
-docker compose logs -f
+git clone https://github.com/iget-master/rustdesk-api-server.git && cd rustdesk-api-server
+RUSTDESK_API_ADMIN_PASSWORD='uma-senha-forte' docker compose up -d --build
 ```
 
-O banco fica em `./data/rustdesk-api.db` (volume). Na primeira subida, com o banco vazio, o
-usuário `admin` é criado com a senha da variável. Depois disso a variável é ignorada — use a CLI:
+- Porta **21114/tcp** aberta para as máquinas e para quem usa o console.
+- Banco em `./data/rustdesk-api.db` (volume). Na primeira subida cria o usuário `admin` com a
+  senha da variável; depois ela é ignorada.
+- **Atualizar**: `git pull && docker compose up -d --build`. As migrações rodam sozinhas no start.
 
-```bash
-docker exec -it rustdesk-api rustdesk-api user add alice            # imprime uma senha gerada
-docker exec -it rustdesk-api rustdesk-api user add bob --password 'x' --admin
-docker exec -it rustdesk-api rustdesk-api user list
-```
+Console: `http://SEU-SERVIDOR:21114/` (entre com `admin`). HTTPS opcional via proxy reverso com
+certificado válido — a interface Flutter do cliente não aceita auto-assinado.
 
-Para rodar o container com outro usuário (não-root), use `user: "1000:1000"` no compose e faça
-`chown -R 1000:1000 data/` antes.
+## Primeiros passos no console
 
-### HTTPS
+1. **Configurações** — servidor de ID (host do hbbs), chave pública (`Key`), URL da API e o link
+   do instalador do RustDesk. Só servem para gerar os scripts de instalação.
+2. **Grupos → Novo grupo** — o console gera a senha permanente do grupo, o address book
+   compartilhado e o token de matrícula.
+3. **Script de instalação** (por grupo) — rode como administrador em cada máquina. Ele instala o
+   RustDesk se preciso, aponta para o seu servidor, grava a senha do grupo, deixa
+   `approve-mode=password` / `verification-method=use-permanent-password` e matricula a máquina.
+   Máquinas que já têm o serviço apontando para esta API aparecem sozinhas em **Dispositivos**
+   (sem grupo) e podem ser movidas para o grupo — mas a senha permanente só entra via script ou
+   `rustdesk --password`.
+4. **Usuários** — a equipe é `Equipe` (vê toda a frota); administradores têm controle total de
+   todos os grupos e usam o console. Terceiros são `Externo`: só enxergam os grupos concedidos em
+   **Acessos**.
+5. **Acesso sob demanda** (para terceiros): em *Usuários*, ative "Exigir código de acesso" e defina
+   a validade da sessão (ex.: 4 h). Quando o técnico for entrar: *Gerar código* → passe o código a
+   ele. No cliente RustDesk ele faz login com usuário e senha, o RustDesk pede o código, e pronto.
+   *Derrubar sessões* encerra o acesso na hora.
 
-O cliente aceita HTTP puro. Se quiser HTTPS, coloque um proxy reverso (Caddy, nginx, Traefik) na
-frente e configure `https://api.exemplo.com` nos clientes. Use certificado **válido**: o caminho
-Rust do cliente tolera auto-assinado, mas a interface Flutter (login, address book) não.
+Nos clientes, o campo *API Server* é `http://SEU-SERVIDOR:21114` (ou vazio, se a API está no host
+do ID server na porta padrão). O botão **Entrar** fica na aba de address book.
 
-## Configurando os clientes
+## O que a API implementa
 
-Configurações → Rede → *ID/Relay server*:
+| Área | Endpoints | Comportamento |
+|---|---|---|
+| Conta | `GET /api/login-options`, `POST /api/login`, `POST /api/currentUser`, `POST /api/logout` | usuário + senha (argon2); segundo fator opcional por código do console (fluxo `tfa_check` do cliente); sessões com validade opcional |
+| Address book | `POST /api/ab/personal`, `ab/settings`, `ab/shared/profiles`, `ab/peers`, `ab/tags/{guid}` e as mutações de peer/tag | formato atual; AB pessoal automático; ABs dos grupos mantidos pelo console; regra leitura / leitura-escrita / controle total com validade |
+| Aba Grupo | `GET /api/users`, `GET /api/peers`, `GET /api/device-group/accessible` | equipe vê tudo; externos só os seus grupos |
+| Dispositivos | `POST /api/heartbeat`, `POST /api/sysinfo`, `POST /api/enroll` | inventário; `strategy` com as opções do grupo quando mudam; presets `preset-*`; matrícula por token do grupo |
+| Auditoria | `POST /api/audit/conn`, `audit/file`, `audit/alarm`, `GET /api/audit/conn/active`, `PUT /api/audit` | conexões, arquivos, alarmes, notas; dedup por `nonce` |
+| Provisionamento | `POST /api/devices/cli` (`rustdesk --assign`, exige admin), `POST /api/devices/deploy` (`NOT_ENABLED`) | `--device_group_name` vira grupo |
+| Console | `/admin/api/*` (só admin), interface em `/` | grupos, dispositivos, usuários, acessos, códigos, auditoria, configurações |
 
-- **ID server**: `rd.exemplo.com` (o que você já usa)
-- **API server**: `http://rd.exemplo.com:21114` — pode ficar vazio se a API estiver no mesmo host
-  do ID server, na porta 21114; o cliente deduz sozinho.
-
-Aparece o botão **Login** na aba de address book. Após o login, as abas *Address book* e *Grupo*
-passam a usar este servidor. Dispositivos com o serviço instalado começam a mandar heartbeat e
-inventário sozinhos (sem login) e aparecem em `rustdesk-api device list` e na aba Grupo.
+O que não está aí responde 404 (OIDC, address book legado, gravação).
 
 ## CLI
 
-O binário é ao mesmo tempo o servidor e a ferramenta de administração. Dentro do container:
-`docker exec -it rustdesk-api rustdesk-api <comando>`.
+Dentro do container: `docker exec -it rustdesk-api rustdesk-api <comando>`.
 
 ```text
-rustdesk-api serve [--bind 0.0.0.0:21114]        # padrão sem subcomando
+rustdesk-api serve [--bind 0.0.0.0:21114]
 rustdesk-api user add <nome> [--password S] [--admin] [--display-name N] [--email E]
-rustdesk-api user passwd <nome> [--password S]  # encerra as sessões
-rustdesk-api user list | enable <nome> | disable <nome> | delete <nome>
-rustdesk-api ab create <nome> --owner <usuário>
-rustdesk-api ab share <nome> --owner <dono> --user <usuário> --rule read|rw|full
-rustdesk-api ab unshare <nome> --owner <dono> --user <usuário>
-rustdesk-api ab list
-rustdesk-api device list
-rustdesk-api device assign <id> [--user U] [--group G] [--note N]
-rustdesk-api device delete <id>
-rustdesk-api token <usuário>                     # token Bearer p/ scripts e `rustdesk --assign`
-rustdesk-api health                              # usado no HEALTHCHECK
+rustdesk-api user passwd <nome> [--password S] | list | enable <nome> | disable <nome> | delete <nome>
+rustdesk-api ab create <nome> --owner <usuário> | share <nome> --owner <dono> --user <u> --rule read|rw|full | unshare … | list
+rustdesk-api device list | assign <id> [--user U] [--group GRUPO] [--note N] | delete <id>
+rustdesk-api token <usuário>          # token Bearer para scripts / `rustdesk --assign`
+rustdesk-api health
 ```
-
-Atribuir um dispositivo a partir dele mesmo (requer token de um usuário **admin**):
-
-```bash
-rustdesk --assign --token <token> --user_name alice --device_group_name TI --address_book_name Suporte
-```
-
-Instalações pré-configuradas (opções `preset-user-name`, `preset-device-group-name`,
-`preset-address-book-name`, `preset-address-book-tag`, ...) são aplicadas automaticamente quando o
-dispositivo envia o `sysinfo`: o dono só é definido se ainda não houver um, e o peer só entra no
-address book se ainda não estiver lá — edições feitas pela interface não são sobrescritas.
 
 ## Variáveis de ambiente
 
@@ -104,45 +93,39 @@ address book se ainda não estiver lá — edições feitas pela interface não 
 |---|---|---|
 | `RUSTDESK_API_DB_PATH` | `rustdesk-api.db` (`/data/rustdesk-api.db` no container) | arquivo SQLite (WAL) |
 | `RUSTDESK_API_BIND` | `0.0.0.0:21114` | endereço de escuta |
-| `RUSTDESK_API_ADMIN_USER` / `RUSTDESK_API_ADMIN_PASSWORD` | `admin` / — | criam o primeiro usuário quando o banco está vazio |
-| `RUST_LOG` | `info,sqlx=warn` | nível de log (`debug` mostra cada requisição) |
+| `RUSTDESK_API_ADMIN_USER` / `RUSTDESK_API_ADMIN_PASSWORD` | `admin` / — | primeiro usuário, só com o banco vazio |
+| `RUST_LOG` | `info,sqlx=warn` | nível de log |
 
 ## Modelo de permissões
 
-- Todo usuário ativo vê todos os usuários e dispositivos (`/api/users`, `/api/peers`).
-- Address book pessoal: só o dono. Compartilhado: dono = controle total; os demais conforme
-  `ab share --rule` (leitura só lista; `rw`/`full` também alteram peers e tags).
-- `is_admin` é exigido apenas em `POST /api/devices/cli` (`rustdesk --assign`).
-- Senhas com argon2id; tokens de 256 bits, revogados em `logout`, `user passwd`, `user disable`.
+- **Administrador**: console, controle total de todos os grupos, `rustdesk --assign`.
+- **Equipe**: vê toda a frota na aba Grupo; nos address books, o que lhe for concedido.
+- **Externo**: só os grupos concedidos, sem lista de usuários, sem console.
+- Acessos e contas podem ter validade; sessões podem expirar por tempo; códigos de acesso são de
+  uso único. Senhas com argon2id, tokens de 256 bits.
+- A senha do grupo viaja para o cliente de quem tem acesso ao address book (é assim que o cliente
+  conecta sem pedir). Ao encerrar um terceiro, **rotacione a senha do grupo** (Grupos → rotacionar)
+  e reaplique nas máquinas com o script.
 
 ## Desenvolvimento
 
 ```bash
-cargo build                                   # precisa de gcc (sqlite embutido)
+cargo build
 RUSTDESK_API_DB_PATH=/tmp/dev.db cargo run -- user add admin --password admin --admin
 RUSTDESK_API_DB_PATH=/tmp/dev.db cargo run -- serve --bind 127.0.0.1:21114
-RD_PASS=admin ./scripts/smoke-test.sh          # exercita o contrato inteiro com curl
+RD_PASS=admin ./scripts/smoke-test.sh      # contrato do cliente (curl)
+RD_PASS=admin ./scripts/console-test.sh    # console ponta a ponta (curl + jq)
 ```
 
-Backup: copie `rustdesk-api.db` com o serviço parado, ou use
-`sqlite3 rustdesk-api.db ".backup backup.db"` com ele rodando.
-
-Testando o container **dentro do WSL** com o projeto em `/mnt/c/...`: não use o bind mount
-`./data` (SQLite sobre drvfs/9p trava); suba com um volume nomeado:
-
-```bash
-docker build -t rustdesk-api-server:local .
-docker run -d --name rustdesk-api -p 21114:21114 -v rustdesk-api-data:/data \
-  -e RUSTDESK_API_ADMIN_PASSWORD='admin123' rustdesk-api-server:local
-```
-
-No Windows, o cliente RustDesk enxerga esse container em `http://127.0.0.1:21114`
-(o WSL encaminha `localhost`).
+Backup: copie `rustdesk-api.db` com o serviço parado, ou `sqlite3 rustdesk-api.db ".backup b.db"`.
+Testando o container dentro do WSL, use um volume nomeado em vez de `./data` em `/mnt/c`.
 
 ## Limitações conhecidas
 
-- Sem OIDC, 2FA de login, verificação por e-mail, address book legado ou console web.
-- O heartbeat ainda não devolve `strategy` nem `disconnect` (a estrutura está pronta para isso).
-- O status online da aba Grupo vem do hbbs, não desta API; `device list` mostra online pelo
-  heartbeat (45 s).
-- Um só inquilino: não há isolamento entre equipes de usuários.
+- A senha permanente das máquinas não é empurrável pelo servidor (limite do cliente): entra via
+  script de instalação ou `rustdesk --password`. Rotacionar no console atualiza o address book;
+  as máquinas precisam do script de novo.
+- Sem OIDC, e-mail ou TOTP de aplicativo (o segundo fator é o código emitido no console).
+- Uma sessão remota já aberta não cai quando o token do usuário expira; o que expira é o acesso
+  ao address book e novos logins.
+- Um só inquilino: todos os administradores veem tudo.

@@ -127,12 +127,17 @@ Para ligar:
 1. No hbbs (fork [iget-master/rustdesk-server](https://github.com/iget-master/rustdesk-server)),
    defina as variáveis mostradas em **Configurações → Integração com o hbbs** e reinicie-o:
    ```yaml
-   environment:
+   environment:   # nos dois serviços, hbbs e hbbr
      - API_AUTH_URL=http://127.0.0.1:21114/api/internal/authorize
      - API_AUTH_SECRET=<segredo de Configurações>
    ```
 2. Em cada grupo que deve ficar fechado, marque **Política de conexão → Exigir login para
    conectar**. Os demais grupos continuam como antes.
+
+**Relay fechado**: o hbbs informa à API a sessão de cada relay que autorizou, e o hbbr
+(configurado com as mesmas duas variáveis) consulta a API antes de parear duas conexões,
+recusando sessões não anunciadas. Assim nem um cliente modificado com a chave do servidor
+consegue usar o relay.
 
 **Política global** (*Configurações → Integração com o hbbs*): "Bloquear conexões a máquinas
 fora de grupo" faz o hbbs recusar qualquer destino que não esteja cadastrado em um grupo,

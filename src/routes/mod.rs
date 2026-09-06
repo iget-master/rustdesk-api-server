@@ -61,6 +61,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/audit", put(audit::note))
         // hbbs (fork) pergunta se pode intermediar uma conexão
         .route("/api/internal/authorize", post(authorize::authorize))
+        .route("/api/internal/relay", post(authorize::relay))
         // instaladores (token de matrícula de um grupo)
         .route("/downloads/{name}", get(downloads::get_file))
         // console

@@ -116,7 +116,19 @@ must "política global: só máquinas em grupo" "$(j -X PUT "$API/admin/api/sett
 must "desconhecida recusada com a política" "$(authz "{\"token\":\"$TOKEN\",\"peer_id\":\"000000001\"}")" '.allow==false and (.reason|test("cadastrado"))'
 must "máquina do grupo continua liberada para o admin" "$(authz "{\"token\":\"$TOKEN\",\"peer_id\":\"$DEV\"}")" '.allow==true'
 j -X PUT "$API/admin/api/settings" -H "$A" -d '{"require_group":"0"}' >/dev/null
-must "recusas ficam na auditoria" "$(j "$API/admin/api/audit/denied?device=$DEV" -H "$A")" '.total >= 2 and (.data[0].from_ip=="203.0.113.9" or .data[1].from_ip=="203.0.113.9")'
+
+echo "== relay: hbbr só pareia sessões anunciadas"
+relay() { j -X POST "$API/api/internal/relay" -H "X-Hbbs-Secret: $SECRET" -d "$1"; }
+must_code "relay sem o segredo" "$(code -X POST "$API/api/internal/relay" -d '{"op":"check","uuid":"u-1"}')" 401
+must "sessão não anunciada é recusada" "$(relay '{"op":"check","uuid":"u-1","from":"203.0.113.9"}')" '.allow==false'
+must "hbbs anuncia" "$(relay '{"op":"announce","uuid":"u-1"}')" '.ok==true'
+must "sessão anunciada é liberada" "$(relay '{"op":"check","uuid":"u-1"}')" '.allow==true'
+must "autorização de relay já anuncia a sessão" "$(authz "{\"token\":\"$TOKEN\",\"peer_id\":\"$DEV\",\"relay_uuid\":\"u-2\"}")" '.allow==true'
+must "u-2 liberada no relay" "$(relay '{"op":"check","uuid":"u-2"}')" '.allow==true'
+must "pedido recusado não anuncia" "$(authz "{\"token\":\"\",\"peer_id\":\"$DEV\",\"relay_uuid\":\"u-3\"}")" '.allow==false'
+must "u-3 segue recusada" "$(relay '{"op":"check","uuid":"u-3"}')" '.allow==false'
+must "recusa de relay na auditoria" "$(j "$API/admin/api/audit/denied?device=relay" -H "$A")" '.total >= 1 and (.data[0].reason|test("relay"))'
+must "recusas ficam na auditoria" "$(j "$API/admin/api/audit/denied?device=$DEV" -H "$A")" '.total >= 2 and any(.data[]; .from_ip=="203.0.113.9")'
 
 echo "== listagens do console"
 for k in conn file alarm denied; do

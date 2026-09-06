@@ -51,23 +51,94 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+async fn require_secret(db: &Db, headers: &HeaderMap) -> ApiResult<()> {
+    let secret = ensure_hbbs_secret(db).await?;
+    let given = headers
+        .get(SECRET_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if constant_time_eq(given, &secret) {
+        Ok(())
+    } else {
+        Err(ApiError::new(StatusCode::UNAUTHORIZED, "Invalid hbbs secret"))
+    }
+}
+
+/// Validade de uma sessão de relay anunciada: as duas pontas conectam no hbbr em segundos.
+const RELAY_TTL_SECS: i64 = 300;
+
+fn announce_relay(st: &AppState, uuid: &str) {
+    let mut sessions = st
+        .relay_sessions
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let t = now();
+    sessions.retain(|_, exp| *exp > t);
+    sessions.insert(uuid.to_owned(), t + RELAY_TTL_SECS);
+}
+
+/// `POST /api/internal/relay` — `op: "announce"` (hbbs) registra a sessão de relay de um pedido
+/// autorizado; `op: "check"` (hbbr) pergunta se pode parear a sessão. Sem anúncio, o hbbr recusa:
+/// só a chave do servidor não basta para usar o relay.
+pub async fn relay(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<Json<Value>> {
+    require_secret(&st.db, &headers).await?;
+    let v = parse_value(&body)?;
+    let uuid = s(&v, "uuid");
+    if uuid.is_empty() {
+        return Err(ApiError::bad_request("uuid is required"));
+    }
+    match s(&v, "op").as_str() {
+        "announce" => {
+            announce_relay(&st, &uuid);
+            Ok(Json(json!({ "ok": true })))
+        }
+        "check" => {
+            let allowed = {
+                let mut sessions = st
+                    .relay_sessions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let t = now();
+                sessions.retain(|_, exp| *exp > t);
+                sessions.contains_key(&uuid)
+            };
+            if allowed {
+                Ok(Json(json!({ "allow": true })))
+            } else {
+                let from = s(&v, "from");
+                let reason = "Sessão de relay não autorizada pelo servidor.";
+                tracing::warn!(uuid = %uuid, from = %from, "relay recusado");
+                sqlx::query(
+                    "INSERT INTO authz_denied (at, peer_id, group_id, from_ip, user_name, reason) \
+                     VALUES (?, 'relay', NULL, ?, '', ?)",
+                )
+                .bind(now())
+                .bind(&from)
+                .bind(reason)
+                .execute(&st.db)
+                .await?;
+                Ok(Json(json!({ "allow": false, "reason": reason })))
+            }
+        }
+        _ => Err(ApiError::bad_request("op must be announce or check")),
+    }
+}
+
 pub async fn authorize(
     State(st): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<Json<Value>> {
-    let secret = ensure_hbbs_secret(&st.db).await?;
-    let given = headers
-        .get(SECRET_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if !constant_time_eq(given, &secret) {
-        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Invalid hbbs secret"));
-    }
+    require_secret(&st.db, &headers).await?;
     let v = parse_value(&body)?;
     let token = s(&v, "token");
     let peer_id = s(&v, "peer_id");
     let from = s(&v, "from");
+    let relay_uuid = s(&v, "relay_uuid");
     if peer_id.is_empty() {
         return Err(ApiError::bad_request("peer_id is required"));
     }
@@ -144,6 +215,9 @@ pub async fn authorize(
     let user_name = user.as_ref().map(|u| u.user.name.clone());
     match decision {
         Ok(why) => {
+            if !relay_uuid.is_empty() {
+                announce_relay(&st, &relay_uuid);
+            }
             tracing::info!(peer = %peer_id, user = user_name.as_deref().unwrap_or("-"), from = %from, why, "conexão autorizada");
             Ok(Json(json!({ "allow": true, "user": user_name, "reason": why })))
         }

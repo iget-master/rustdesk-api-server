@@ -11,9 +11,13 @@ use clap::{Parser, Subcommand};
 use db::Db;
 use tracing_subscriber::EnvFilter;
 
+/// Sessões de relay autorizadas (uuid → vence em), anunciadas pelo hbbs e checadas pelo hbbr.
+pub type RelaySessions = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, i64>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
+    pub relay_sessions: RelaySessions,
     /// Pasta dos instaladores servidos em `/downloads/{name}` (ao lado do banco, ou
     /// `RUSTDESK_API_DOWNLOADS_DIR`).
     pub downloads_dir: std::path::PathBuf,
@@ -109,7 +113,11 @@ async fn serve(db: Db, downloads_dir: std::path::PathBuf, bind: &str) -> anyhow:
     cli::bootstrap_admin(&db).await?;
     std::fs::create_dir_all(&downloads_dir)?;
     tracing::info!(dir = %downloads_dir.display(), "instaladores em /downloads");
-    let app = routes::router(AppState { db, downloads_dir });
+    let app = routes::router(AppState {
+        db,
+        downloads_dir,
+        relay_sessions: Default::default(),
+    });
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("rustdesk-api escutando em http://{bind}");
     axum::serve(listener, app)

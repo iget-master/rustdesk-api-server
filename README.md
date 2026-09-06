@@ -134,6 +134,12 @@ Para ligar:
 2. Em cada grupo que deve ficar fechado, marque **Política de conexão → Exigir login para
    conectar**. Os demais grupos continuam como antes.
 
+**Política global** (*Configurações → Integração com o hbbs*): "Bloquear conexões a máquinas
+fora de grupo" faz o hbbs recusar qualquer destino que não esteja cadastrado em um grupo,
+inclusive IDs desconhecidos. É o que fecha o servidor para quem só tem o endereço e a chave: dá
+para registrar um ID no hbbs, mas nenhuma conexão é intermediada até um administrador colocar a
+máquina num grupo.
+
 Limites: a checagem é feita ao abrir a conexão (uma sessão já aberta não cai quando o token vence);
 acesso por IP direto não passa pelo hbbs (`direct-server` vem desligado — dá para forçar `N` nas
 opções do grupo); todo mundo que conecta nesses grupos precisa estar logado no cliente, inclusive

@@ -55,7 +55,7 @@ pub fn router() -> Router<AppState> {
         .layer(axum::extract::DefaultBodyLimit::max(300 * 1024 * 1024))
 }
 
-const SETTING_KEYS: &[&str] = &["server_host", "server_key", "api_url", "download_url", "client_app_name"];
+const SETTING_KEYS: &[&str] = &["server_host", "server_key", "api_url", "download_url", "client_app_name", "require_group"];
 
 async fn settings_map(db: &Db) -> ApiResult<Map<String, Value>> {
     let rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings")

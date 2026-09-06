@@ -84,6 +84,14 @@ pub async fn authorize(
         Some((gid, name, rl)) => (gid, name.unwrap_or_default(), rl.unwrap_or(0) != 0),
         None => (None, String::new(), false),
     };
+    // Política global (Configurações): só máquinas cadastradas em algum grupo recebem conexão.
+    // Fecha o servidor para quem só tem a chave: um destino desconhecido nunca é intermediado.
+    let require_group = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM settings WHERE key = 'require_group'",
+    )
+    .fetch_optional(&st.db)
+    .await?
+    .is_some_and(|v| v == "1");
 
     // quem está conectando: sessão válida ou anônimo
     let user = if token.is_empty() {
@@ -97,6 +105,9 @@ pub async fn authorize(
     };
 
     let decision: Result<&str, String> = match &user {
+        _ if require_group && group_id.is_none() => Err(
+            "Este computador não está cadastrado em nenhum grupo do console.".to_owned(),
+        ),
         None if !require_login => Ok("anonymous"),
         None if token.is_empty() => Err(
             "Este computador só aceita conexões de usuários logados. Entre com sua conta no RustDesk."

@@ -112,6 +112,10 @@ must "externo com acesso ao grupo permitido" "$(authz "{\"token\":\"$EXT_TOKEN\"
 must "externo recusado em máquina fora dos seus grupos" "$(authz "{\"token\":\"$EXT_TOKEN\",\"peer_id\":\"000000001\"}")" '.allow==false'
 must "administrador permitido" "$(authz "{\"token\":\"$TOKEN\",\"peer_id\":\"$DEV\"}")" '.allow==true and .user=="'"$RD_USER"'"'
 must "máquina desconhecida sem política" "$(authz "{\"token\":\"\",\"peer_id\":\"000000001\"}")" '.allow==true'
+must "política global: só máquinas em grupo" "$(j -X PUT "$API/admin/api/settings" -H "$A" -d '{"require_group":"1"}')" '.require_group=="1"'
+must "desconhecida recusada com a política" "$(authz "{\"token\":\"$TOKEN\",\"peer_id\":\"000000001\"}")" '.allow==false and (.reason|test("cadastrado"))'
+must "máquina do grupo continua liberada para o admin" "$(authz "{\"token\":\"$TOKEN\",\"peer_id\":\"$DEV\"}")" '.allow==true'
+j -X PUT "$API/admin/api/settings" -H "$A" -d '{"require_group":"0"}' >/dev/null
 must "recusas ficam na auditoria" "$(j "$API/admin/api/audit/denied?device=$DEV" -H "$A")" '.total >= 2 and (.data[0].from_ip=="203.0.113.9" or .data[1].from_ip=="203.0.113.9")'
 
 echo "== listagens do console"

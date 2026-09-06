@@ -473,9 +473,13 @@ async function pageConfig(main) {
   const f = { server_host: el('input', { value: s.server_host, placeholder: 'rustdesk.exemplo.com.br' }), server_key: el('input', { value: s.server_key, placeholder: 'conteúdo de id_ed25519.pub' }), api_url: el('input', { value: s.api_url || location.origin, placeholder: location.origin }), download_url: el('input', { value: s.download_url, placeholder: 'https://github.com/…/releases/download/…/RustdeskOlirio-1.4.9-x86_64.exe' }), client_app_name: el('input', { value: s.client_app_name || '', placeholder: 'ex.: RustdeskOlirio' }) };
   Object.values(f).forEach(i => i.style.width = '100%');
   const envText = `API_AUTH_URL=http://127.0.0.1:${location.port || 21114}/api/internal/authorize\nAPI_AUTH_SECRET=${s.hbbs_secret}`;
+  const reqGroup = el('input', { type: 'checkbox', checked: s.require_group === '1' });
   const hbbsCard = el('div', { class: 'form', style: 'max-width:720px;margin-top:16px' }, el('h2', { style: 'margin-top:0' }, 'Integração com o servidor RustDesk (hbbs)', help('Faz o servidor RustDesk consultar este console antes de cada conexão e recusar quem não está logado ou não tem acesso, nos grupos com "Exigir login". Cole as variáveis no serviço hbbs e reinicie-o; ajuste o endereço se o console roda em outra máquina. Se o console estiver fora do ar, as conexões são recusadas (API_AUTH_FAIL_OPEN=Y inverte). As recusas ficam em Auditoria → Recusadas.')),
     el('pre', { class: 'mono', style: 'white-space:pre-wrap;user-select:all' }, envText),
-    el('button', { class: 'small', onclick: () => copyText(envText) }, 'copiar'));
+    el('button', { class: 'small', onclick: () => copyText(envText) }, 'copiar'),
+    el('h2', {}, 'Política global', help('Com a integração ativa, o hbbs recusa conexões a qualquer máquina que não esteja cadastrada em um grupo do console, inclusive IDs desconhecidos. Quem tiver só o endereço e a chave do servidor não consegue chegar a máquina nenhuma. Vale para todo mundo, administradores incluídos: para conectar numa máquina nova, coloque-a num grupo antes.')),
+    el('label', {}, reqGroup, ' Bloquear conexões a máquinas fora de grupo (inclusive desconhecidas)'),
+    el('button', { class: 'primary', onclick: async () => { try { await api('/admin/api/settings', { method: 'PUT', body: { require_group: reqGroup.checked ? '1' : '0' } }); toast('Política salva'); } catch (e) { fail(e); } } }, 'Salvar política'));
   // instaladores hospedados na API
   const filesCard = el('div', { class: 'form', style: 'max-width:720px;margin-top:16px' }, el('h2', { style: 'margin-top:0' }, 'Instaladores no servidor', help('Arquivos guardados nesta API e servidos em /downloads/<nome>. O download exige o token de matrícula de um grupo, que o script de instalação já envia, então o link não fica público. Envie aqui o instalador gerado pelo build do cliente personalizado e clique em "usar no script".')));
   const filesList = el('div', {});

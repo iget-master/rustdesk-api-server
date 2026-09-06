@@ -49,6 +49,21 @@ DEV2=${DEV}9
 must "máquina nova com token entra no grupo sozinha" "$(hb "$DEV2" "$ENROLL" "")" ".password==\"$PASS\""
 must "console lista a máquina nova no grupo" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV2\")) | length == 1"
 
+echo "== instaladores hospedados na API"
+FAKE=/tmp/rdapi-fake-installer.bin; printf 'fake-installer' > "$FAKE"
+must "upload" "$(curl -sS -X PUT "$API/admin/api/downloads/Fake-1.0-x86_64.exe?use=1" -H "$A" -H 'Content-Type: application/octet-stream' --data-binary "@$FAKE")" '.name=="Fake-1.0-x86_64.exe" and .size==14 and .used==true'
+must "use=1 apontou o script para o arquivo" "$(j "$API/admin/api/settings" -H "$A")" '.download_url=="http://api.example.com:21114/downloads/Fake-1.0-x86_64.exe"'
+must "lista" "$(j "$API/admin/api/downloads" -H "$A")" 'map(select(.name=="Fake-1.0-x86_64.exe")) | length==1'
+must_code "download sem token" "$(code "$API/downloads/Fake-1.0-x86_64.exe")" 401
+must_code "download com token do grupo" "$(code "$API/downloads/Fake-1.0-x86_64.exe" -H "X-Enroll-Token: $ENROLL")" 200
+must_code "download com token na query" "$(code "$API/downloads/Fake-1.0-x86_64.exe?token=$ENROLL")" 200
+must_code "download com sessão de admin" "$(code "$API/downloads/Fake-1.0-x86_64.exe" -H "$A")" 200
+[ "$(curl -sS "$API/downloads/Fake-1.0-x86_64.exe" -H "X-Enroll-Token: $ENROLL")" = "fake-installer" ] && echo "ok  conteúdo íntegro" || die "conteúdo do download"
+must_code "nome com caminho é recusado" "$(code "$API/downloads/..%2Fetc%2Fpasswd" -H "X-Enroll-Token: $ENROLL")" 404
+grep -q "X-Enroll-Token" <<< "$(j "$API/admin/api/groups/$SID/install-script?os=windows" -H "$A")" && echo "ok  script baixa com o token de matrícula" || die "script sem X-Enroll-Token"
+must_code "apagar" "$(code -X DELETE "$API/admin/api/downloads/Fake-1.0-x86_64.exe" -H "$A")" 200
+must_code "apagado some" "$(code "$API/downloads/Fake-1.0-x86_64.exe" -H "X-Enroll-Token: $ENROLL")" 404
+
 echo "== strategy no heartbeat"
 HB=$(j -X POST "$API/api/heartbeat" -d "{\"id\":\"$DEV\",\"uuid\":\"dGVzdA==\",\"ver\":1004020,\"modified_at\":0}")
 must "heartbeat entrega strategy" "$HB" '.strategy.config_options["approve-mode"]=="password" and .modified_at>0'

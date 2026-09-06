@@ -46,6 +46,13 @@ pub fn router() -> Router<AppState> {
         .route("/audit/file", get(audit_file))
         .route("/audit/alarm", get(audit_alarm))
         .route("/audit/denied", get(audit_denied))
+        .route("/downloads", get(super::downloads::list))
+        .route(
+            "/downloads/{name}",
+            put(super::downloads::upload).delete(super::downloads::delete),
+        )
+        // upload de instaladores (o padrão do axum é 2 MB)
+        .layer(axum::extract::DefaultBodyLimit::max(300 * 1024 * 1024))
 }
 
 const SETTING_KEYS: &[&str] = &["server_host", "server_key", "api_url", "download_url", "client_app_name"];
@@ -325,7 +332,11 @@ pub async fn groups_install_script(
             lines.extend([
                 "if (-not (Test-Path $exe)) {".to_owned(),
                 format!("  $installer = Join-Path $env:TEMP '{app}-install.exe'"),
-                format!("  Invoke-WebRequest -Uri {} -OutFile $installer", ps_quote(&download)),
+                format!(
+                    "  Invoke-WebRequest -Uri {} -OutFile $installer -Headers @{{ 'X-Enroll-Token' = {} }}",
+                    ps_quote(&download),
+                    ps_quote(&group.enroll_token)
+                ),
                 "  Start-Process -FilePath $installer -ArgumentList '--silent-install' -Wait".to_owned(),
                 "  Start-Sleep -Seconds 8".to_owned(),
                 "}".to_owned(),

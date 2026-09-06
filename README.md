@@ -164,8 +164,13 @@ grupo, a API responde com `password` + `password_tag` e o cliente aplica na hora
 senha no console atualiza todas as máquinas do grupo em segundos. Uma máquina instalada com o
 token entra no grupo sozinha.
 
-Para usar: em *Configurações*, informe o link do instalador da release e o nome do app em
-**Cliente personalizado**; os scripts de instalação passam a instalar esse cliente. A coluna
+Para usar: em *Configurações*, envie o instalador gerado pelo build em **Instaladores no
+servidor** (ou deixe o workflow enviar sozinho), clique em *usar no script* e informe o nome do
+app em **Cliente personalizado**; os scripts de instalação passam a instalar esse cliente. Os
+instaladores ficam em `<pasta do banco>/downloads` e são servidos em `/downloads/<nome>` só
+para quem apresenta o token de matrícula de um grupo (`X-Enroll-Token`, que o script já
+envia) ou uma sessão de administrador — o repositório do cliente é privado porque o instalador
+carrega o endereço e a chave do seu servidor. A coluna
 **Senha** em *Dispositivos* mostra `sincronizada`, `pendente` (ainda não confirmou a senha atual)
 ou `manual` (RustDesk comum, senha só pelo script).
 

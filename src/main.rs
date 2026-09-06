@@ -14,6 +14,9 @@ use tracing_subscriber::EnvFilter;
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
+    /// Pasta dos instaladores servidos em `/downloads/{name}` (ao lado do banco, ou
+    /// `RUSTDESK_API_DOWNLOADS_DIR`).
+    pub downloads_dir: std::path::PathBuf,
 }
 
 #[derive(Parser)]
@@ -80,11 +83,20 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let db = db::connect(&cli.db).await?;
+    let downloads_dir = std::env::var("RUSTDESK_API_DOWNLOADS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::Path::new(&cli.db)
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("downloads")
+        });
     let command = cli.command.unwrap_or(Command::Serve {
         bind: std::env::var("RUSTDESK_API_BIND").unwrap_or_else(|_| "0.0.0.0:21114".to_owned()),
     });
     match command {
-        Command::Serve { bind } => serve(db, &bind).await,
+        Command::Serve { bind } => serve(db, downloads_dir, &bind).await,
         Command::User { cmd } => cli::user(&db, cmd).await,
         Command::Ab { cmd } => cli::ab(&db, cmd).await,
         Command::Device { cmd } => cli::device(&db, cmd).await,
@@ -93,9 +105,11 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn serve(db: Db, bind: &str) -> anyhow::Result<()> {
+async fn serve(db: Db, downloads_dir: std::path::PathBuf, bind: &str) -> anyhow::Result<()> {
     cli::bootstrap_admin(&db).await?;
-    let app = routes::router(AppState { db });
+    std::fs::create_dir_all(&downloads_dir)?;
+    tracing::info!(dir = %downloads_dir.display(), "instaladores em /downloads");
+    let app = routes::router(AppState { db, downloads_dir });
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("rustdesk-api escutando em http://{bind}");
     axum::serve(listener, app)

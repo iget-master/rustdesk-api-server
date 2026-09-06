@@ -476,10 +476,30 @@ async function pageConfig(main) {
   const hbbsCard = el('div', { class: 'form', style: 'max-width:720px;margin-top:16px' }, el('h2', { style: 'margin-top:0' }, 'Integração com o servidor RustDesk (hbbs)', help('Faz o servidor RustDesk consultar este console antes de cada conexão e recusar quem não está logado ou não tem acesso, nos grupos com "Exigir login". Cole as variáveis no serviço hbbs e reinicie-o; ajuste o endereço se o console roda em outra máquina. Se o console estiver fora do ar, as conexões são recusadas (API_AUTH_FAIL_OPEN=Y inverte). As recusas ficam em Auditoria → Recusadas.')),
     el('pre', { class: 'mono', style: 'white-space:pre-wrap;user-select:all' }, envText),
     el('button', { class: 'small', onclick: () => copyText(envText) }, 'copiar'));
+  // instaladores hospedados na API
+  const filesCard = el('div', { class: 'form', style: 'max-width:720px;margin-top:16px' }, el('h2', { style: 'margin-top:0' }, 'Instaladores no servidor', help('Arquivos guardados nesta API e servidos em /downloads/<nome>. O download exige o token de matrícula de um grupo, que o script de instalação já envia, então o link não fica público. Envie aqui o instalador gerado pelo build do cliente personalizado e clique em "usar no script".')));
+  const filesList = el('div', {});
+  const fileIn = el('input', { type: 'file' });
+  const loadFiles = async () => {
+    const files = await api('/admin/api/downloads');
+    filesList.replaceChildren(table(['Arquivo', 'Tamanho', 'Enviado em', ''], files.map(x => [el('span', { class: 'mono' }, x.name), (x.size / 1048576).toFixed(1) + ' MB', fmtTs(x.modified_at),
+      el('div', { class: 'actions' },
+        el('button', { class: 'small', onclick: async () => { const url = (f.api_url.value || location.origin).replace(/\/$/, '') + '/downloads/' + x.name; f.download_url.value = url; try { await api('/admin/api/settings', { method: 'PUT', body: { download_url: url } }); toast('O script passa a instalar ' + x.name); } catch (e) { fail(e); } } }, 'usar no script'),
+        el('button', { class: 'small danger', onclick: async () => { if (!confirm('Apagar ' + x.name + '?')) return; try { await api('/admin/api/downloads/' + encodeURIComponent(x.name), { method: 'DELETE' }); loadFiles(); } catch (e) { fail(e); } } }, 'apagar'))]), 'Nenhum instalador enviado.'));
+  };
+  filesCard.append(filesList, el('div', { class: 'row', style: 'margin-top:10px' }, field('Enviar instalador (.exe)', fileIn), el('div', {}, el('button', { onclick: async () => {
+    const file = fileIn.files[0]; if (!file) return toast('Escolha um arquivo');
+    toast('Enviando ' + file.name + '…');
+    try {
+      const r = await fetch('/admin/api/downloads/' + encodeURIComponent(file.name), { method: 'PUT', headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/octet-stream' }, body: file });
+      const d = await r.json(); if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+      toast('Enviado'); fileIn.value = ''; loadFiles();
+    } catch (e) { fail(e); } } }, 'Enviar'))));
+  loadFiles();
   main.replaceChildren(el('h1', {}, 'Configurações', help('Dados usados para montar o script de instalação: endereço e chave do seu servidor RustDesk, endereço deste console e o instalador. Com um cliente personalizado (nome do app), o script instala esse cliente, que já traz servidor e chave fixos e recebe a senha do grupo sozinho.')),
     el('div', { class: 'form', style: 'max-width:720px' }, field('Servidor de ID (hbbs)', f.server_host), field('Chave pública do servidor (Key)', f.server_key), field('URL da API', f.api_url), field('Link do instalador (Windows .exe)', f.download_url), field('Cliente personalizado: nome do app (vazio = RustDesk oficial)', f.client_app_name),
       el('div', { style: 'margin-top:12px' }, el('button', { class: 'primary', onclick: async () => { try { await api('/admin/api/settings', { method: 'PUT', body: Object.fromEntries(Object.entries(f).map(([k, i]) => [k, i.value])) }); toast('Salvo'); } catch (e) { fail(e); } } }, 'Salvar'))),
-    hbbsCard);
+    hbbsCard, filesCard);
 }
 
 boot();

@@ -4,6 +4,7 @@ pub mod admin;
 pub mod audit;
 pub mod authorize;
 pub mod device;
+pub mod downloads;
 pub mod group;
 
 use axum::response::Html;
@@ -60,6 +61,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/audit", put(audit::note))
         // hbbs (fork) pergunta se pode intermediar uma conexão
         .route("/api/internal/authorize", post(authorize::authorize))
+        // instaladores (token de matrícula de um grupo)
+        .route("/downloads/{name}", get(downloads::get_file))
         // console
         .nest("/admin/api", admin::router())
         .fallback(not_found)

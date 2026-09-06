@@ -172,6 +172,11 @@ function select(options, value, attrs = {}) {
 }
 function field(label, input) { return el('div', {}, el('label', {}, label), input); }
 function tag(text, cls) { return el('span', { class: 'tag ' + (cls || '') }, text); }
+// estado da senha do grupo na máquina (cliente personalizado sincroniza pelo heartbeat)
+function syncTag(d) {
+  if (!d.sync_client) return el('span', { class: 'muted', title: 'RustDesk comum: a senha só entra pelo script de instalação' }, 'manual');
+  return d.password_synced ? tag('sincronizada', 'ok') : tag('pendente', 'warn');
+}
 // Ícone "?" com a explicação: aparece ao passar o mouse (desktop) ou ao tocar (mobile).
 function help(text) {
   const tip = el('span', { class: 'help-tip', role: 'tooltip' }, text);
@@ -292,12 +297,12 @@ async function pageGroup(main, id) {
   // senha
   const pw = el('span', { class: 'mono' }, '••••••••••••');
   let shown = false;
-  const pwCard = el('div', { class: 'form' }, el('h2', { style: 'margin-top:0' }, 'Senha do grupo', help('A senha que as máquinas do grupo aceitam. Quem tem acesso ao grupo entra com ela automaticamente. Trocar aqui vale na hora para quem acessa; nas máquinas, rode o script de instalação de novo.')),
+  const pwCard = el('div', { class: 'form' }, el('h2', { style: 'margin-top:0' }, 'Senha do grupo', help('A senha que as máquinas do grupo aceitam. Quem tem acesso ao grupo entra com ela automaticamente. Trocar aqui vale na hora para quem acessa. Máquinas com o cliente personalizado aplicam sozinhas; nas outras, rode o script de instalação de novo.')),
     el('p', {}, pw, ' ',
       el('button', { class: 'small', onclick: () => { shown = !shown; pw.textContent = shown ? s.password : '••••••••••••'; } }, 'mostrar/ocultar'), ' ',
       el('button', { class: 'small', onclick: () => copyText(s.password) }, 'copiar'), ' ',
       el('button', { class: 'small', onclick: async () => { const n = prompt('Nova senha (em branco cancela):'); if (!n) return; try { await api('/admin/api/groups/' + id, { method: 'PUT', body: { password: n } }); toast('Senha alterada — atualize as máquinas'); reload(); } catch (e) { fail(e); } } }, 'definir'), ' ',
-      el('button', { class: 'small', onclick: async () => { if (!confirm('Gerar uma senha nova? As máquinas do grupo precisarão rodar o script de instalação de novo (ou `rustdesk --password`).')) return; try { const r = await api('/admin/api/groups/' + id + '/rotate-password', { method: 'POST' }); dialog(el('h2', { style: 'margin-top:0' }, 'Nova senha do grupo'), el('div', { class: 'code', style: 'font-size:24px;letter-spacing:.08em' }, r.password), el('p', { class: 'muted', style: 'text-align:center' }, 'Quem tem acesso já recebe a senha nova. Nas máquinas, rode o script de instalação de novo.')); reload(); } catch (e) { fail(e); } } }, 'rotacionar')));
+      el('button', { class: 'small', onclick: async () => { if (!confirm('Gerar uma senha nova? Máquinas com o cliente personalizado aplicam sozinhas em segundos; nas outras é preciso rodar o script de instalação de novo.')) return; try { const r = await api('/admin/api/groups/' + id + '/rotate-password', { method: 'POST' }); dialog(el('h2', { style: 'margin-top:0' }, 'Nova senha do grupo'), el('div', { class: 'code', style: 'font-size:24px;letter-spacing:.08em' }, r.password), el('p', { class: 'muted', style: 'text-align:center' }, 'Quem tem acesso já recebe a senha nova. Máquinas com o cliente personalizado aplicam sozinhas (coluna Senha); nas outras, rode o script de novo.')); reload(); } catch (e) { fail(e); } } }, 'rotacionar')));
 
   // política de conexão (o hbbs consulta a API antes de intermediar)
   const reqLogin = el('input', { type: 'checkbox', checked: !!s.require_login });
@@ -323,8 +328,8 @@ async function pageGroup(main, id) {
   const others = allDevices.filter(d => d.group_id !== id);
   const addSel = select([['', '— escolher máquina —'], ...others.map(d => [d.id, `${d.hostname || d.id} (${d.id})${d.group_name ? ' — ' + d.group_name : ''}`])], '');
   const devCard = el('div', {}, el('h2', {}, `Máquinas (${devices.length})`),
-    table(['', 'ID', 'Host', 'Usuário SO', 'SO', 'Versão', 'Último heartbeat', 'Nota', ''], devices.map(d => [
-      el('span', { class: 'dot' + (d.online ? ' on' : '') }), el('span', { class: 'mono' }, d.id), d.hostname, d.username, d.platform || d.os, d.version, fmtAgo(d.last_seen_at, now) + ' atrás', d.note,
+    table(['', 'ID', 'Host', 'Usuário SO', 'SO', 'Versão', 'Senha', 'Último heartbeat', 'Nota', ''], devices.map(d => [
+      el('span', { class: 'dot' + (d.online ? ' on' : '') }), el('span', { class: 'mono' }, d.id), d.hostname, d.username, d.platform || d.os, d.version, syncTag(d), fmtAgo(d.last_seen_at, now) + ' atrás', d.note,
       el('button', { class: 'small', onclick: async () => { try { await api('/admin/api/devices/' + d.id, { method: 'PUT', body: { group_id: null } }); reload(); } catch (e) { fail(e); } } }, 'remover do grupo')]), 'Nenhuma máquina ainda. Rode o script de instalação abaixo ou adicione uma máquina já conhecida.'),
     el('div', { class: 'row', style: 'margin-top:10px' }, field('Adicionar máquina já conhecida', addSel), el('div', {}, el('button', { onclick: async () => { if (!addSel.value) return; try { await api('/admin/api/devices/' + addSel.value, { method: 'PUT', body: { group_id: id } }); reload(); } catch (e) { fail(e); } } }, 'Adicionar'))));
 
@@ -362,9 +367,9 @@ async function pageDevices(main) {
   const load = async () => {
     const devices = await api(`/admin/api/devices?group=${encodeURIComponent(stSel.value)}&q=${encodeURIComponent(q.value)}`);
     const now = Math.floor(Date.now() / 1000);
-    list.replaceChildren(table(['', 'ID', 'Host', 'Usuário SO', 'SO', 'Versão', 'Grupo', 'Último heartbeat', 'Nota', ''], devices.map(d => {
+    list.replaceChildren(table(['', 'ID', 'Host', 'Usuário SO', 'SO', 'Versão', 'Senha', 'Grupo', 'Último heartbeat', 'Nota', ''], devices.map(d => {
       const sel = select([['', '— sem grupo —'], ...groups.map(s => [s.id, s.name])], d.group_id ?? '', { onchange: async e => { try { await api('/admin/api/devices/' + d.id, { method: 'PUT', body: { group_id: e.target.value ? Number(e.target.value) : null } }); toast('Grupo atualizado'); load(); } catch (err) { fail(err); } } });
-      return [el('span', { class: 'dot' + (d.online ? ' on' : ''), title: d.online ? 'online' : 'offline' }), el('span', { class: 'mono' }, d.id), d.hostname, d.username, d.platform || d.os, d.version, sel, d.last_seen_at ? fmtAgo(d.last_seen_at, now) + ' atrás' : 'nunca',
+      return [el('span', { class: 'dot' + (d.online ? ' on' : ''), title: d.online ? 'online' : 'offline' }), el('span', { class: 'mono' }, d.id), d.hostname, d.username, d.platform || d.os, d.version, syncTag(d), sel, d.last_seen_at ? fmtAgo(d.last_seen_at, now) + ' atrás' : 'nunca',
         el('span', {}, d.note || '', ' ', el('button', { class: 'small', onclick: async () => { const n = prompt('Nota:', d.note || ''); if (n !== null) { try { await api('/admin/api/devices/' + d.id, { method: 'PUT', body: { note: n } }); load(); } catch (e) { fail(e); } } } }, 'editar')),
         el('button', { class: 'small danger', onclick: async () => { if (!confirm(`Remover ${d.hostname || d.id} do inventário? Volta sozinho no próximo heartbeat.`)) return; try { await api('/admin/api/devices/' + d.id, { method: 'DELETE' }); load(); } catch (e) { fail(e); } } }, 'remover')];
     }), 'Nenhum dispositivo ainda. As máquinas aparecem sozinhas depois de instaladas com o script de um grupo.'));
@@ -465,14 +470,14 @@ async function pageAudit(main) {
 // ---------------------------------------------------------------- configurações
 async function pageConfig(main) {
   const s = await api('/admin/api/settings');
-  const f = { server_host: el('input', { value: s.server_host, placeholder: 'rustdesk.exemplo.com.br' }), server_key: el('input', { value: s.server_key, placeholder: 'conteúdo de id_ed25519.pub' }), api_url: el('input', { value: s.api_url || location.origin, placeholder: location.origin }), download_url: el('input', { value: s.download_url, placeholder: 'https://github.com/rustdesk/rustdesk/releases/download/…/rustdesk-…-x86_64.exe' }) };
+  const f = { server_host: el('input', { value: s.server_host, placeholder: 'rustdesk.exemplo.com.br' }), server_key: el('input', { value: s.server_key, placeholder: 'conteúdo de id_ed25519.pub' }), api_url: el('input', { value: s.api_url || location.origin, placeholder: location.origin }), download_url: el('input', { value: s.download_url, placeholder: 'https://github.com/…/releases/download/…/RustdeskOlirio-1.4.9-x86_64.exe' }), client_app_name: el('input', { value: s.client_app_name || '', placeholder: 'ex.: RustdeskOlirio' }) };
   Object.values(f).forEach(i => i.style.width = '100%');
   const envText = `API_AUTH_URL=http://127.0.0.1:${location.port || 21114}/api/internal/authorize\nAPI_AUTH_SECRET=${s.hbbs_secret}`;
   const hbbsCard = el('div', { class: 'form', style: 'max-width:720px;margin-top:16px' }, el('h2', { style: 'margin-top:0' }, 'Integração com o servidor RustDesk (hbbs)', help('Faz o servidor RustDesk consultar este console antes de cada conexão e recusar quem não está logado ou não tem acesso, nos grupos com "Exigir login". Cole as variáveis no serviço hbbs e reinicie-o; ajuste o endereço se o console roda em outra máquina. Se o console estiver fora do ar, as conexões são recusadas (API_AUTH_FAIL_OPEN=Y inverte). As recusas ficam em Auditoria → Recusadas.')),
     el('pre', { class: 'mono', style: 'white-space:pre-wrap;user-select:all' }, envText),
     el('button', { class: 'small', onclick: () => copyText(envText) }, 'copiar'));
-  main.replaceChildren(el('h1', {}, 'Configurações', help('Dados usados para montar o script de instalação: endereço e chave do seu servidor RustDesk, endereço deste console e o instalador do RustDesk.')),
-    el('div', { class: 'form', style: 'max-width:720px' }, field('Servidor de ID (hbbs)', f.server_host), field('Chave pública do servidor (Key)', f.server_key), field('URL da API', f.api_url), field('Link do instalador do RustDesk (Windows .exe)', f.download_url),
+  main.replaceChildren(el('h1', {}, 'Configurações', help('Dados usados para montar o script de instalação: endereço e chave do seu servidor RustDesk, endereço deste console e o instalador. Com um cliente personalizado (nome do app), o script instala esse cliente, que já traz servidor e chave fixos e recebe a senha do grupo sozinho.')),
+    el('div', { class: 'form', style: 'max-width:720px' }, field('Servidor de ID (hbbs)', f.server_host), field('Chave pública do servidor (Key)', f.server_key), field('URL da API', f.api_url), field('Link do instalador (Windows .exe)', f.download_url), field('Cliente personalizado: nome do app (vazio = RustDesk oficial)', f.client_app_name),
       el('div', { style: 'margin-top:12px' }, el('button', { class: 'primary', onclick: async () => { try { await api('/admin/api/settings', { method: 'PUT', body: Object.fromEntries(Object.entries(f).map(([k, i]) => [k, i.value])) }); toast('Salvo'); } catch (e) { fail(e); } } }, 'Salvar'))),
     hbbsCard);
 }

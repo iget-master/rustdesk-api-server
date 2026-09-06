@@ -22,6 +22,14 @@ pub fn default_options() -> Value {
     })
 }
 
+/// Identificador curto e não reversível da senha; a máquina informa no heartbeat a tag da
+/// senha que aplicou por último e a API reenvia a senha quando a tag não bate.
+pub fn password_tag(password: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(password.as_bytes());
+    crate::util::hex(&digest[..8])
+}
+
 pub fn new_password() -> String {
     rand::thread_rng()
         .sample_iter(&Alphanumeric)

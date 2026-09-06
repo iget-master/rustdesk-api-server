@@ -51,6 +51,47 @@ pub async fn heartbeat(State(st): State<AppState>, body: Bytes) -> ApiResult<Jso
     if has_sysinfo != Some(1) {
         resp["sysinfo"] = json!(true);
     }
+    // Cliente personalizado: o token de matrícula gravado na instalação prova que a máquina é
+    // nossa; ela entra no grupo do token se ainda não tem grupo, e recebe a senha do grupo em que
+    // está sempre que a tag da senha aplicada não bate (instalação nova, rotação, troca local).
+    let enroll_token = s(&v, "enroll_token");
+    if !enroll_token.is_empty() {
+        match crate::groups::by_enroll_token(&st.db, &enroll_token).await? {
+            Some(token_group) => {
+                let assigned: Option<i64> =
+                    sqlx::query_scalar("SELECT group_id FROM devices WHERE id = ?")
+                        .bind(&id)
+                        .fetch_one(&st.db)
+                        .await?;
+                let group = match assigned {
+                    None => {
+                        crate::groups::assign_device(&st.db, &id, Some(token_group.id)).await?;
+                        tracing::info!(device = %id, group = %token_group.name, "máquina matriculada pelo heartbeat");
+                        token_group
+                    }
+                    Some(gid) if gid == token_group.id => token_group,
+                    Some(gid) => crate::groups::get(&st.db, gid).await?,
+                };
+                let tag = crate::groups::password_tag(&group.password);
+                let synced = s(&v, "password_tag") == tag;
+                if !synced {
+                    resp["password"] = json!(group.password);
+                    resp["password_tag"] = json!(tag);
+                }
+                sqlx::query(
+                    "UPDATE devices SET sync_client = 1, password_synced = ?, \
+                     password_synced_at = CASE WHEN ? THEN ? ELSE password_synced_at END WHERE id = ?",
+                )
+                .bind(i64::from(synced))
+                .bind(synced)
+                .bind(t)
+                .bind(&id)
+                .execute(&st.db)
+                .await?;
+            }
+            None => tracing::warn!(device = %id, "heartbeat com token de matrícula inválido"),
+        }
+    }
     let strategy: Option<(String, i64)> = sqlx::query_as(
         "SELECT st.options, st.options_updated_at FROM devices d \
          JOIN groups st ON st.id = d.group_id WHERE d.id = ?",

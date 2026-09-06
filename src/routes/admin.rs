@@ -48,7 +48,7 @@ pub fn router() -> Router<AppState> {
         .route("/audit/denied", get(audit_denied))
 }
 
-const SETTING_KEYS: &[&str] = &["server_host", "server_key", "api_url", "download_url"];
+const SETTING_KEYS: &[&str] = &["server_host", "server_key", "api_url", "download_url", "client_app_name"];
 
 async fn settings_map(db: &Db) -> ApiResult<Map<String, Value>> {
     let rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings")
@@ -265,11 +265,12 @@ pub async fn groups_install_script(
             .unwrap_or("")
             .to_owned()
     };
-    let (host, key, api, download) = (
+    let (host, key, api, download, custom_app) = (
         get("server_host"),
         get("server_key"),
         get("api_url"),
         get("download_url"),
+        get("client_app_name"),
     );
     if host.is_empty() || api.is_empty() {
         return Err(ApiError::bad_request(
@@ -292,6 +293,7 @@ pub async fn groups_install_script(
             format!("rustdesk --option api-server {}", sh_quote(&api)),
             "rustdesk --option approve-mode password".to_owned(),
             "rustdesk --option verification-method use-permanent-password".to_owned(),
+            format!("rustdesk --option enroll-token {}", sh_quote(&group.enroll_token)),
             format!("rustdesk --password {}", sh_quote(&group.password)),
             "ID=$(rustdesk --get-id | tail -n 1 | tr -d '[:space:]')".to_owned(),
             format!(
@@ -306,33 +308,42 @@ pub async fn groups_install_script(
         ]);
         lines.join("\n") + "\n"
     } else {
+        // Cliente personalizado (client_app_name): instala em C:\Program Files\<App>\<App>.exe e já
+        // vem com servidor, relay, API e chave fixos; só precisa do token de matrícula.
+        let app = if custom_app.is_empty() { "RustDesk" } else { custom_app.as_str() };
+        let exe_name = if custom_app.is_empty() { "rustdesk.exe".to_owned() } else { format!("{custom_app}.exe") };
         let mut lines = vec![
-            format!("# RustDesk — Grupo: {}", group.name),
+            format!("# {app} — Grupo: {}", group.name),
             "# Execute no PowerShell como Administrador: instala (se necessário), configura o servidor,".to_owned(),
             "# define a senha permanente do grupo e matricula esta máquina no console.".to_owned(),
             "$ErrorActionPreference = 'Stop'".to_owned(),
-            "$exe = 'C:\\Program Files\\RustDesk\\rustdesk.exe'".to_owned(),
+            format!("$exe = 'C:\\Program Files\\{app}\\{exe_name}'"),
         ];
         if download.is_empty() {
             lines.push("if (-not (Test-Path $exe)) { throw 'Instale o RustDesk primeiro (link do instalador não configurado)' }".to_owned());
         } else {
             lines.extend([
                 "if (-not (Test-Path $exe)) {".to_owned(),
-                "  $installer = Join-Path $env:TEMP 'rustdesk-install.exe'".to_owned(),
+                format!("  $installer = Join-Path $env:TEMP '{app}-install.exe'"),
                 format!("  Invoke-WebRequest -Uri {} -OutFile $installer", ps_quote(&download)),
                 "  Start-Process -FilePath $installer -ArgumentList '--silent-install' -Wait".to_owned(),
                 "  Start-Sleep -Seconds 8".to_owned(),
                 "}".to_owned(),
             ]);
         }
-        lines.push(format!("& $exe --option custom-rendezvous-server {}", ps_quote(&host)));
-        if !key.is_empty() {
-            lines.push(format!("& $exe --option key {}", ps_quote(&key)));
+        if custom_app.is_empty() {
+            lines.push(format!("& $exe --option custom-rendezvous-server {}", ps_quote(&host)));
+            if !key.is_empty() {
+                lines.push(format!("& $exe --option key {}", ps_quote(&key)));
+            }
+            lines.push(format!("& $exe --option api-server {}", ps_quote(&api)));
+        } else {
+            lines.push("# Servidor, relay, API e chave já vêm fixos no cliente personalizado.".to_owned());
         }
         lines.extend([
-            format!("& $exe --option api-server {}", ps_quote(&api)),
             "& $exe --option approve-mode 'password'".to_owned(),
             "& $exe --option verification-method 'use-permanent-password'".to_owned(),
+            format!("& $exe --option enroll-token {}", ps_quote(&group.enroll_token)),
             format!("& $exe --password {}", ps_quote(&group.password)),
             "$id = (& $exe --get-id | Select-Object -Last 1).Trim()".to_owned(),
             format!(

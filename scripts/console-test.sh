@@ -37,6 +37,18 @@ must "enroll" "$(j -X POST "$API/api/enroll" -d "{\"token\":\"$ENROLL\",\"id\":\
 j -X POST "$API/api/sysinfo" -d "{\"id\":\"$DEV\",\"uuid\":\"dGVzdA==\",\"hostname\":\"PDV-01\",\"username\":\"caixa\",\"os\":\"windows / Windows 10 Pro\",\"version\":\"1.4.2\",\"cpu\":\"i3\",\"memory\":\"8GB\"}" >/dev/null
 must "dispositivo no grupo" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV\" and .hostname==\"PDV-01\")) | length == 1"
 
+echo "== cliente personalizado: senha pelo heartbeat"
+hb() { j -X POST "$API/api/heartbeat" -d "{\"id\":\"$1\",\"uuid\":\"dGVzdA==\",\"ver\":1004020,\"modified_at\":0,\"enroll_token\":\"$2\",\"password_tag\":\"$3\"}"; }
+HB=$(hb "$DEV" "$ENROLL" "")
+must "heartbeat entrega a senha do grupo" "$HB" ".password==\"$PASS\" and (.password_tag|length)==16"
+PTAG=$(echo "$HB" | jq -r .password_tag)
+must "com a tag certa não reenvia" "$(hb "$DEV" "$ENROLL" "$PTAG")" 'has("password")|not'
+must "console mostra senha sincronizada" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV\")) | .[0].sync_client==true and .[0].password_synced==true"
+must "token inválido é ignorado" "$(hb "$DEV" "nope" "")" 'has("password")|not'
+DEV2=${DEV}9
+must "máquina nova com token entra no grupo sozinha" "$(hb "$DEV2" "$ENROLL" "")" ".password==\"$PASS\""
+must "console lista a máquina nova no grupo" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV2\")) | length == 1"
+
 echo "== strategy no heartbeat"
 HB=$(j -X POST "$API/api/heartbeat" -d "{\"id\":\"$DEV\",\"uuid\":\"dGVzdA==\",\"ver\":1004020,\"modified_at\":0}")
 must "heartbeat entrega strategy" "$HB" '.strategy.config_options["approve-mode"]=="password" and .modified_at>0'
@@ -99,6 +111,14 @@ NEW=$(j -X POST "$API/admin/api/groups/$SID/rotate-password" -H "$A" | jq -r .pa
 must "AB atualizado com a nova senha" "$(j -X POST "$API/api/ab/peers?current=1&pageSize=100&ab=$GUID" -H "$E" -H 'Content-Length: 0')" ".data[0].password==\"$NEW\""
 j "$API/admin/api/groups/$SID/install-script?os=windows" -H "$A" | grep -q -- "--password '$NEW'" && echo "ok  script Windows traz a senha nova" || die "script Windows"
 j "$API/admin/api/groups/$SID/install-script?os=linux" -H "$A" | grep -q "$ENROLL" && echo "ok  script Linux traz o token de matrícula" || die "script Linux"
+must "heartbeat entrega a senha rotacionada" "$(hb "$DEV" "$ENROLL" "$PTAG")" ".password==\"$NEW\""
+must "console marca a senha como pendente" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV\")) | .[0].password_synced==false"
+must "settings aceita o cliente personalizado" "$(j -X PUT "$API/admin/api/settings" -H "$A" -d '{"client_app_name":"RustdeskOlirio"}')" '.client_app_name=="RustdeskOlirio"'
+SCRIPT=$(j "$API/admin/api/groups/$SID/install-script?os=windows" -H "$A")
+grep -q "Program Files\\\\RustdeskOlirio\\\\RustdeskOlirio.exe" <<< "$SCRIPT" && echo "ok  script instala o cliente personalizado" || die "script cliente personalizado"
+grep -q -- "--option enroll-token '$ENROLL'" <<< "$SCRIPT" && echo "ok  script grava o token de matrícula" || die "script enroll-token"
+grep -q "custom-rendezvous-server" <<< "$SCRIPT" && die "script do cliente personalizado não deve configurar servidor" || echo "ok  script não mexe no servidor (fixo no cliente)"
+j -X PUT "$API/admin/api/settings" -H "$A" -d '{"client_app_name":""}' >/dev/null
 
 echo "== derrubar sessão"
 j -X POST "$API/admin/api/users/$UID_/logout" -H "$A" >/dev/null
@@ -109,6 +129,7 @@ echo "== limpeza"
 j -X DELETE "$API/admin/api/grants" -H "$A" -d "{\"user_id\":$UID_,\"group_id\":$SID}" >/dev/null
 j -X DELETE "$API/admin/api/users/$UID_" -H "$A" >/dev/null
 j -X DELETE "$API/admin/api/devices/$DEV" -H "$A" >/dev/null
+j -X DELETE "$API/admin/api/devices/$DEV2" -H "$A" >/dev/null
 j -X DELETE "$API/admin/api/groups/$SID" -H "$A" >/dev/null
 must "grupo removido" "$(j "$API/admin/api/groups" -H "$A")" "map(select(.id==$SID)) | length == 0"
 echo; echo "CONSOLE OK"

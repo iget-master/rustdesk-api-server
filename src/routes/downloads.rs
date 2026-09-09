@@ -17,6 +17,19 @@ use crate::error::{ApiError, ApiResult};
 use crate::AppState;
 
 /// Só nomes simples de arquivo: nada de barras, `..` ou nome começando com ponto.
+/// Extrai um `x.y.z` de um nome de arquivo (o trecho entre hífens que são só números e pontos).
+fn version_from_name(name: &str) -> Option<String> {
+    name.split('-')
+        .find(|part| {
+            let comps: Vec<&str> = part.split('.').collect();
+            comps.len() == 3
+                && comps
+                    .iter()
+                    .all(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_digit()))
+        })
+        .map(str::to_owned)
+}
+
 fn checked_name(name: &str) -> ApiResult<&str> {
     let ok = !name.is_empty()
         && name.len() <= 120
@@ -154,6 +167,17 @@ pub async fn upload(
             .bind(&url)
             .execute(&st.db)
             .await?;
+            // A versão sai do nome do arquivo (ex.: RustdeskOlirio-1.4.10-x86_64.exe -> 1.4.10) e
+            // vira `client_version`, que dispara o auto-update nas máquinas em versão mais antiga.
+            if let Some(ver) = version_from_name(&name) {
+                sqlx::query(
+                    "INSERT INTO settings (key, value) VALUES ('client_version', ?) \
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                )
+                .bind(&ver)
+                .execute(&st.db)
+                .await?;
+            }
             used = true;
         }
     }

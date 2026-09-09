@@ -168,12 +168,15 @@ Testando o container dentro do WSL, use um volume nomeado em vez de `./data` em 
 
 O repositório [iget-master/rustdesk-olirio-client](https://github.com/iget-master/rustdesk-olirio-client)
 gera um cliente Windows com nome próprio a partir da última release oficial do RustDesk, com
-servidor, relay, API e chave fixos e **a senha permanente gerenciada por esta API**: a cada
-heartbeat a máquina manda o token de matrícula do grupo (`enroll_token`, gravado na instalação
-com `--option enroll-token`) e a tag da senha que aplicou; quando não bate com a senha atual do
-grupo, a API responde com `password` + `password_tag` e o cliente aplica na hora. Rotacionar a
-senha no console atualiza todas as máquinas do grupo em segundos. Uma máquina instalada com o
-token entra no grupo sozinha.
+servidor, relay, API e chave fixos e **a senha permanente gerenciada por esta API**: o cliente
+aplica a senha que a API devolver no heartbeat. **Toda máquina que está num grupo recebe a senha
+do grupo** — basta atribuí-la a um grupo no console; não precisa de token nem de tocar na
+máquina. O token de matrícula (`enroll_token`, gravado na instalação com `--option enroll-token`)
+é opcional: serve para a máquina entrar no grupo sozinha e para o cliente informar a tag da senha
+que aplicou (confirmação exata). Sem token, o servidor usa `devices.password_synced` para não
+reenviar a cada heartbeat — zerado quando a máquina troca de grupo e quando a senha é rotacionada,
+de modo que a senha nova sempre chega no próximo heartbeat. Rotacionar a senha no console atualiza
+todas as máquinas do grupo em segundos.
 
 O cliente personalizado também manda o `lan_ip` (o IPv4 da máquina na rede local) em cada
 heartbeat, exibido na coluna **IP na LAN** e pesquisável na busca de dispositivos — útil para

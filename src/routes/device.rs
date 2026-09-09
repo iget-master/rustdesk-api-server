@@ -55,9 +55,9 @@ pub async fn heartbeat(State(st): State<AppState>, body: Bytes) -> ApiResult<Jso
     if has_sysinfo != Some(1) {
         resp["sysinfo"] = json!(true);
     }
-    // Cliente personalizado: o token de matrícula gravado na instalação prova que a máquina é
-    // nossa; ela entra no grupo do token se ainda não tem grupo, e recebe a senha do grupo em que
-    // está sempre que a tag da senha aplicada não bate (instalação nova, rotação, troca local).
+    // Matrícula automática por token: se a máquina mandou um token de matrícula válido e ainda não
+    // tem grupo, ela entra no grupo do token. O token é opcional — dá para atribuir a máquina a um
+    // grupo pelo console e a senha é empurrada do mesmo jeito (bloco abaixo).
     let enroll_token = s(&v, "enroll_token");
     if !enroll_token.is_empty() {
         match crate::groups::by_enroll_token(&st.db, &enroll_token).await? {
@@ -67,34 +67,49 @@ pub async fn heartbeat(State(st): State<AppState>, body: Bytes) -> ApiResult<Jso
                         .bind(&id)
                         .fetch_one(&st.db)
                         .await?;
-                let group = match assigned {
-                    None => {
-                        crate::groups::assign_device(&st.db, &id, Some(token_group.id)).await?;
-                        tracing::info!(device = %id, group = %token_group.name, "máquina matriculada pelo heartbeat");
-                        token_group
-                    }
-                    Some(gid) if gid == token_group.id => token_group,
-                    Some(gid) => crate::groups::get(&st.db, gid).await?,
-                };
-                let tag = crate::groups::password_tag(&group.password);
-                let synced = s(&v, "password_tag") == tag;
-                if !synced {
-                    resp["password"] = json!(group.password);
-                    resp["password_tag"] = json!(tag);
+                if assigned.is_none() {
+                    crate::groups::assign_device(&st.db, &id, Some(token_group.id)).await?;
+                    tracing::info!(device = %id, group = %token_group.name, "máquina matriculada pelo heartbeat");
                 }
-                sqlx::query(
-                    "UPDATE devices SET sync_client = 1, password_synced = ?, \
-                     password_synced_at = CASE WHEN ? THEN ? ELSE password_synced_at END WHERE id = ?",
-                )
-                .bind(i64::from(synced))
-                .bind(synced)
-                .bind(t)
-                .bind(&id)
-                .execute(&st.db)
-                .await?;
             }
             None => tracing::warn!(device = %id, "heartbeat com token de matrícula inválido"),
         }
+    }
+    // O cliente personalizado aplica a senha permanente que a API devolver no heartbeat. Toda
+    // máquina que está num grupo recebe a senha do grupo — não precisa de token, basta atribuí-la
+    // a um grupo no console. Quando o cliente informa a tag da senha que aplicou (máquina com
+    // token), ela é a fonte da verdade; quando não informa, `password_synced` guarda se já
+    // entregamos a senha atual (zerado ao trocar de grupo e ao rotacionar), para não reenviar a
+    // cada heartbeat.
+    let device: Option<(Option<i64>, i64)> =
+        sqlx::query_as("SELECT group_id, password_synced FROM devices WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&st.db)
+            .await?;
+    if let Some((Some(group_id), password_synced)) = device {
+        let group = crate::groups::get(&st.db, group_id).await?;
+        let tag = crate::groups::password_tag(&group.password);
+        // Máquina com token informa a tag da senha que aplicou (o campo `password_tag` existe, mesmo
+        // vazio na primeira vez): é a fonte da verdade. Máquina sem token não manda o campo: aí o
+        // `password_synced` do servidor diz se já entregamos a senha atual.
+        let (deliver, synced) = match v.get("password_tag").and_then(|x| x.as_str()) {
+            Some(client_tag) => (client_tag != tag, client_tag == tag),
+            None => (password_synced == 0, true),
+        };
+        if deliver {
+            resp["password"] = json!(group.password);
+            resp["password_tag"] = json!(tag);
+        }
+        sqlx::query(
+            "UPDATE devices SET sync_client = 1, password_synced = ?, \
+             password_synced_at = CASE WHEN ? THEN ? ELSE password_synced_at END WHERE id = ?",
+        )
+        .bind(i64::from(synced))
+        .bind(synced)
+        .bind(t)
+        .bind(&id)
+        .execute(&st.db)
+        .await?;
     }
     let strategy: Option<(String, i64)> = sqlx::query_as(
         "SELECT st.options, st.options_updated_at FROM devices d \

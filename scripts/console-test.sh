@@ -55,10 +55,20 @@ must "heartbeat entrega a senha do grupo" "$HB" ".password==\"$PASS\" and (.pass
 PTAG=$(echo "$HB" | jq -r .password_tag)
 must "com a tag certa não reenvia" "$(hb "$DEV" "$ENROLL" "$PTAG")" 'has("password")|not'
 must "console mostra senha sincronizada" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV\")) | .[0].sync_client==true and .[0].password_synced==true"
-must "token inválido é ignorado" "$(hb "$DEV" "nope" "")" 'has("password")|not'
+must "token inválido não matricula máquina fora de grupo" "$(hb "${DEV}8" "nope" "")" 'has("password")|not'
 DEV2=${DEV}9
 must "máquina nova com token entra no grupo sozinha" "$(hb "$DEV2" "$ENROLL" "")" ".password==\"$PASS\""
 must "console lista a máquina nova no grupo" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV2\")) | length == 1"
+
+echo "== matrícula pelo console (sem token): o grupo empurra a senha"
+hb_plain() { j -X POST "$API/api/heartbeat" -d "{\"id\":\"$1\",\"uuid\":\"dGVzdA==\",\"ver\":1004020,\"modified_at\":0}"; }
+DEV3=${DEV}7
+must "máquina fora de grupo não recebe senha" "$(hb_plain "$DEV3")" 'has("password")|not'
+must "fora de grupo aparece como manual" "$(j "$API/admin/api/devices?q=$DEV3" -H "$A")" "any(.[]; .id==\"$DEV3\" and .sync_client==false)"
+j -X PUT "$API/admin/api/devices/$DEV3" -H "$A" -d "{\"group_id\":$SID}" >/dev/null
+must "atribuída ao grupo pelo console, o heartbeat entrega a senha" "$(hb_plain "$DEV3")" ".password==\"$PASS\" and (.password_tag|length)==16"
+must "entregue uma vez, não reenvia no heartbeat seguinte" "$(hb_plain "$DEV3")" 'has("password")|not'
+must "console mostra sincronizada mesmo sem token" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV3\")) | .[0].sync_client==true and .[0].password_synced==true"
 
 echo "== instaladores hospedados na API"
 FAKE=/tmp/rdapi-fake-installer.bin; printf 'fake-installer' > "$FAKE"
@@ -154,6 +164,7 @@ must "AB atualizado com a nova senha" "$(j -X POST "$API/api/ab/peers?current=1&
 j "$API/admin/api/groups/$SID/install-script?os=windows" -H "$A" | grep -q -- "--password '$NEW'" && echo "ok  script Windows traz a senha nova" || die "script Windows"
 j "$API/admin/api/groups/$SID/install-script?os=linux" -H "$A" | grep -q "$ENROLL" && echo "ok  script Linux traz o token de matrícula" || die "script Linux"
 must "heartbeat entrega a senha rotacionada" "$(hb "$DEV" "$ENROLL" "$PTAG")" ".password==\"$NEW\""
+must "máquina do console (sem token) recebe a senha rotacionada" "$(hb_plain "$DEV3")" ".password==\"$NEW\""
 must "console marca a senha como pendente" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV\")) | .[0].password_synced==false"
 must "settings aceita o cliente personalizado" "$(j -X PUT "$API/admin/api/settings" -H "$A" -d '{"client_app_name":"RustdeskOlirio"}')" '.client_app_name=="RustdeskOlirio"'
 SCRIPT=$(j "$API/admin/api/groups/$SID/install-script?os=windows" -H "$A")

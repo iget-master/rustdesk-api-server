@@ -174,7 +174,7 @@ function field(label, input) { return el('div', {}, el('label', {}, label), inpu
 function tag(text, cls) { return el('span', { class: 'tag ' + (cls || '') }, text); }
 // estado da senha do grupo na máquina (cliente personalizado sincroniza pelo heartbeat)
 function syncTag(d) {
-  if (!d.sync_client) return el('span', { class: 'muted', title: 'RustDesk comum: a senha só entra pelo script de instalação' }, 'manual');
+  if (!d.sync_client) return el('span', { class: 'muted', title: 'Fora de grupo: atribua a máquina a um grupo para o servidor enviar a senha (RustDesk comum não recebe).' }, 'manual');
   return d.password_synced ? tag('sincronizada', 'ok') : tag('pendente', 'warn');
 }
 // Ícone "?" com a explicação: aparece ao passar o mouse (desktop) ou ao tocar (mobile).

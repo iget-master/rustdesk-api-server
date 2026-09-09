@@ -214,6 +214,12 @@ pub async fn set_password(db: &Db, id: i64, password: &str) -> ApiResult<()> {
     .bind(id)
     .execute(db)
     .await?;
+    // Rotação: marca todas as máquinas do grupo como não sincronizadas para o próximo heartbeat
+    // reentregar a senha nova.
+    sqlx::query("UPDATE devices SET password_synced = 0 WHERE group_id = ?")
+        .bind(id)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -332,12 +338,19 @@ pub async fn assign_device(db: &Db, device_id: &str, group: Option<i64>) -> ApiR
         Some(id) => get(db, id).await?.name,
         None => String::new(),
     };
-    sqlx::query("UPDATE devices SET group_id = ?, device_group = ? WHERE id = ?")
-        .bind(group)
-        .bind(name)
-        .bind(device_id)
-        .execute(db)
-        .await?;
+    // Zera `password_synced` na troca de grupo: assim o próximo heartbeat entrega a senha do novo
+    // grupo (é o que torna a matrícula pelo console suficiente, sem tocar na máquina).
+    let changed = old != group;
+    sqlx::query(
+        "UPDATE devices SET group_id = ?, device_group = ?, \
+         password_synced = CASE WHEN ? THEN 0 ELSE password_synced END WHERE id = ?",
+    )
+    .bind(group)
+    .bind(name)
+    .bind(changed)
+    .bind(device_id)
+    .execute(db)
+    .await?;
     if let Some(o) = old {
         if Some(o) != group {
             sync_ab(db, o).await?;

@@ -195,8 +195,10 @@ servidor** (ou deixe o workflow enviar sozinho), clique em *usar no script* e in
 app em **Cliente personalizado**; os scripts de instalação passam a instalar esse cliente. Os
 instaladores ficam em `<pasta do banco>/downloads` e são servidos em `/downloads/<nome>` só
 para quem apresenta o token de matrícula de um grupo (`X-Enroll-Token`, que o script já
-envia) ou uma sessão de administrador — o repositório do cliente é privado porque o instalador
-carrega o endereço e a chave do seu servidor. A coluna
+envia), o **token de download de instaladores** (`installer_token`, em *Configurações*: só baixa,
+não matricula — para entregar a operator a um técnico via `?token=...` sem dar um token de grupo;
+"rotacionar" invalida os links antigos) ou uma sessão de administrador — o repositório do cliente
+é privado porque o instalador carrega o endereço e a chave do seu servidor. A coluna
 **Senha** em *Dispositivos* mostra `sincronizada`, `pendente` (ainda não confirmou a senha atual)
 ou `manual` (RustDesk comum, senha só pelo script).
 

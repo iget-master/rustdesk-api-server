@@ -48,6 +48,10 @@ pub fn router() -> Router<AppState> {
         .route("/audit/denied", get(audit_denied))
         .route("/downloads", get(super::downloads::list))
         .route(
+            "/installer-token/rotate",
+            post(super::downloads::rotate_installer_token),
+        )
+        .route(
             "/downloads/{name}",
             put(super::downloads::upload).delete(super::downloads::delete),
         )
@@ -71,6 +75,10 @@ async fn settings_map(db: &Db) -> ApiResult<Map<String, Value>> {
     map.insert(
         HBBS_SECRET_KEY.to_owned(),
         Value::String(ensure_hbbs_secret(db).await?),
+    );
+    map.insert(
+        crate::routes::downloads::INSTALLER_TOKEN_KEY.to_owned(),
+        Value::String(crate::routes::downloads::ensure_installer_token(db).await?),
     );
     Ok(map)
 }

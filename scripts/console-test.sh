@@ -94,6 +94,17 @@ must_code "download com token na query" "$(code "$API/downloads/Fake-1.4.11-x86_
 must_code "download com sessão de admin" "$(code "$API/downloads/Fake-1.4.11-x86_64.exe" -H "$A")" 200
 [ "$(curl -sS "$API/downloads/Fake-1.4.11-x86_64.exe" -H "X-Enroll-Token: $ENROLL")" = "fake-installer" ] && echo "ok  conteúdo íntegro" || die "conteúdo do download"
 must_code "nome com caminho é recusado" "$(code "$API/downloads/..%2Fetc%2Fpasswd" -H "X-Enroll-Token: $ENROLL")" 404
+
+echo "== token de download de instaladores (sem poder de matrícula)"
+IT=$(j "$API/admin/api/settings" -H "$A" | jq -r .installer_token)
+must "settings expõe o token de download" "$(j "$API/admin/api/settings" -H "$A")" '(.installer_token|length) > 20'
+must_code "download com o token de instaladores" "$(code "$API/downloads/Fake-1.4.11-x86_64.exe?token=$IT")" 200
+must_code "token de instaladores errado é recusado" "$(code "$API/downloads/Fake-1.4.11-x86_64.exe?token=zzzzz")" 401
+must_code "token de instaladores não matricula" "$(code -X POST "$API/api/enroll" -d "{\"token\":\"$IT\",\"id\":\"888000888\"}")" 403
+NEWIT=$(j -X POST "$API/admin/api/installer-token/rotate" -H "$A" | jq -r .installer_token)
+must "rotate devolve token novo" "$(printf '{"a":"%s","b":"%s"}' "$NEWIT" "$IT")" '.a != .b and (.a|length) > 20'
+must_code "token antigo para de funcionar" "$(code "$API/downloads/Fake-1.4.11-x86_64.exe?token=$IT")" 401
+must_code "token novo funciona" "$(code "$API/downloads/Fake-1.4.11-x86_64.exe?token=$NEWIT")" 200
 grep -q "X-Enroll-Token" <<< "$(j "$API/admin/api/groups/$SID/install-script?os=windows" -H "$A")" && echo "ok  script baixa com o token de matrícula" || die "script sem X-Enroll-Token"
 must_code "apagar" "$(code -X DELETE "$API/admin/api/downloads/Fake-1.4.11-x86_64.exe" -H "$A")" 200
 must_code "apagado some" "$(code "$API/downloads/Fake-1.4.11-x86_64.exe" -H "X-Enroll-Token: $ENROLL")" 404

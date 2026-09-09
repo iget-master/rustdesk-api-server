@@ -13,8 +13,37 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use crate::auth::{self, AuthUser};
+use crate::db::Db;
 use crate::error::{ApiError, ApiResult};
 use crate::AppState;
+
+/// Token dedicado a baixar instaladores: entrega o `.exe` sem dar poder de matrícula (diferente do
+/// token de grupo). Gerado na primeira vez que o console pede as configurações.
+pub const INSTALLER_TOKEN_KEY: &str = "installer_token";
+
+pub async fn ensure_installer_token(db: &Db) -> ApiResult<String> {
+    let current: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(INSTALLER_TOKEN_KEY)
+        .fetch_optional(db)
+        .await?;
+    if let Some(v) = current.filter(|v| !v.is_empty()) {
+        return Ok(v);
+    }
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE settings.value = ''",
+    )
+    .bind(INSTALLER_TOKEN_KEY)
+    .bind(auth::new_token())
+    .execute(db)
+    .await?;
+    Ok(
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(INSTALLER_TOKEN_KEY)
+            .fetch_one(db)
+            .await?,
+    )
+}
 
 /// Só nomes simples de arquivo: nada de barras, `..` ou nome começando com ponto.
 /// Extrai um `x.y.z` de um nome de arquivo (o trecho entre hífens que são só números e pontos).
@@ -44,7 +73,26 @@ fn checked_name(name: &str) -> ApiResult<&str> {
     }
 }
 
-/// `GET /downloads/{name}` — token de matrícula de qualquer grupo, ou sessão de administrador.
+/// `POST /admin/api/installer-token/rotate` — gera um novo token de download e invalida o antigo.
+pub async fn rotate_installer_token(
+    State(st): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Value>> {
+    user.require_admin()?;
+    let token = auth::new_token();
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(INSTALLER_TOKEN_KEY)
+    .bind(&token)
+    .execute(&st.db)
+    .await?;
+    Ok(Json(json!({ "installer_token": token })))
+}
+
+/// `GET /downloads/{name}` — token de matrícula de qualquer grupo, o token de download de
+/// instaladores, ou a sessão de administrador.
 pub async fn get_file(
     State(st): State<AppState>,
     Path(name): Path<String>,
@@ -60,11 +108,22 @@ pub async fn get_file(
         .unwrap_or_default();
     let mut allowed = false;
     if !token.trim().is_empty() {
+        let t = token.trim();
+        // token de matrícula de qualquer grupo
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM groups WHERE enroll_token = ?")
-            .bind(token.trim())
+            .bind(t)
             .fetch_one(&st.db)
             .await?;
         allowed = n > 0;
+        // ou o token dedicado de download de instaladores (sem poder de matrícula)
+        if !allowed {
+            let it: Option<String> =
+                sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+                    .bind(INSTALLER_TOKEN_KEY)
+                    .fetch_optional(&st.db)
+                    .await?;
+            allowed = it.filter(|v| !v.is_empty()).is_some_and(|v| v == t);
+        }
     }
     if !allowed {
         if let Some(bearer) = auth::bearer_from_headers(&headers) {

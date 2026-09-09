@@ -484,11 +484,14 @@ async function pageConfig(main) {
   const filesCard = el('div', { class: 'form', style: 'max-width:720px;margin-top:16px' }, el('h2', { style: 'margin-top:0' }, 'Instaladores no servidor', help('Arquivos guardados nesta API e servidos em /downloads/<nome>. O download exige o token de matrícula de um grupo, que o script de instalação já envia, então o link não fica público. Envie aqui o instalador gerado pelo build do cliente personalizado e clique em "usar no script".')));
   const filesList = el('div', {});
   const fileIn = el('input', { type: 'file' });
+  let installerToken = s.installer_token || '';
+  const tokenIn = el('input', { value: installerToken, readonly: true, style: 'width:100%' });
   const loadFiles = async () => {
     const files = await api('/admin/api/downloads');
     filesList.replaceChildren(table(['Arquivo', 'Tamanho', 'Enviado em', ''], files.map(x => [el('span', { class: 'mono' }, x.name), (x.size / 1048576).toFixed(1) + ' MB', fmtTs(x.modified_at),
       el('div', { class: 'actions' },
         el('button', { class: 'small', onclick: async () => { try { const r = await fetch('/downloads/' + encodeURIComponent(x.name), { headers: { 'Authorization': 'Bearer ' + TOKEN } }); if (!r.ok) throw new Error('HTTP ' + r.status); const blob = await r.blob(); const a = el('a', { href: URL.createObjectURL(blob), download: x.name }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 15000); } catch (e) { fail(e); } } }, 'baixar'),
+        el('button', { class: 'small', onclick: () => { const base = (f.api_url.value || location.origin).replace(/\/$/, ''); copyText(base + '/downloads/' + encodeURIComponent(x.name) + '?token=' + installerToken); } }, 'copiar link'),
         el('button', { class: 'small', onclick: async () => { const url = (f.api_url.value || location.origin).replace(/\/$/, '') + '/downloads/' + x.name; f.download_url.value = url; const m = x.name.match(/-(\d+\.\d+\.\d+)-/); const body = { download_url: url }; if (m) { body.client_version = m[1]; f.client_version.value = m[1]; } try { await api('/admin/api/settings', { method: 'PUT', body }); toast('O script instala ' + x.name + (m ? ' e as máquinas atualizam para ' + m[1] : '')); } catch (e) { fail(e); } } }, 'usar no script'),
         el('button', { class: 'small danger', onclick: async () => { if (!confirm('Apagar ' + x.name + '?')) return; try { await api('/admin/api/downloads/' + encodeURIComponent(x.name), { method: 'DELETE' }); loadFiles(); } catch (e) { fail(e); } } }, 'apagar'))]), 'Nenhum instalador enviado.'));
   };
@@ -500,6 +503,11 @@ async function pageConfig(main) {
       const d = await r.json(); if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
       toast('Enviado'); fileIn.value = ''; loadFiles();
     } catch (e) { fail(e); } } }, 'Enviar'))));
+  filesCard.append(el('div', { style: 'margin-top:14px' },
+    el('div', {}, el('label', {}, 'Token de download de instaladores', ' ', help('Use no fim do link (?token=...) para entregar um instalador sem dar um token de grupo — este só baixa, não matricula máquinas. Ex.: para o técnico baixar a versão operador. "copiar link" em cada arquivo já monta a URL com este token. "rotacionar" invalida o token antigo.')), tokenIn),
+    el('div', { class: 'actions', style: 'margin-top:8px' },
+      el('button', { class: 'small', onclick: () => copyText(installerToken) }, 'copiar token'),
+      el('button', { class: 'small danger', onclick: async () => { if (!confirm('Rotacionar o token? Links antigos param de funcionar.')) return; try { const r = await api('/admin/api/installer-token/rotate', { method: 'POST' }); installerToken = r.installer_token; tokenIn.value = installerToken; toast('Token rotacionado'); } catch (e) { fail(e); } } }, 'rotacionar'))));
   loadFiles();
   main.replaceChildren(el('h1', {}, 'Configurações', help('Dados usados para montar o script de instalação: endereço e chave do seu servidor RustDesk, endereço deste console e o instalador. Com um cliente personalizado (nome do app), o script instala esse cliente, que já traz servidor e chave fixos e recebe a senha do grupo sozinho.')),
     el('div', { class: 'form', style: 'max-width:720px' }, field('Servidor de ID (hbbs)', f.server_host), field('Chave pública do servidor (Key)', f.server_key), field('URL da API', f.api_url), field('Link do instalador (Windows .exe)', f.download_url), field('Cliente personalizado: nome do app (vazio = RustDesk oficial)', f.client_app_name), el('div', {}, field('Versão publicada do cliente', f.client_version), help('As máquinas dos grupos que rodam uma versão mais antiga baixam este instalador e se atualizam sozinhas (quando ociosas). Preenchido automaticamente ao clicar "usar no script". Deixe vazio para não forçar atualização.')),

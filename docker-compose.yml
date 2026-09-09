@@ -5,6 +5,9 @@ services:
     container_name: rustdesk-api
     restart: unless-stopped
     ports:
+      # HTTP direto. Mantenha enquanto houver cliente com o endereço antigo
+      # (`http://<dominio>:21114`) fixo dentro dele; depois que a frota migrar
+      # para HTTPS, remova esta seção e a API passa a ser só pelo Traefik.
       - "21114:21114"
     volumes:
       - ./data:/data
@@ -13,3 +16,34 @@ services:
       RUSTDESK_API_ADMIN_USER: admin
       RUSTDESK_API_ADMIN_PASSWORD: ${RUSTDESK_API_ADMIN_PASSWORD:-troque-esta-senha}
       RUST_LOG: info
+    networks:
+      - default
+      - traefik
+    # HTTPS pelo Traefik que já roda no servidor (provider Docker, opt-in por label).
+    # Defina API_DOMAIN no .env; sem ele o Traefik ignora este serviço.
+    labels:
+      - traefik.enable=${TRAEFIK_ENABLE:-true}
+      # O container está em duas redes; diz ao Traefik por qual falar com ele.
+      - traefik.docker.network=${TRAEFIK_NETWORK:-n8n_default}
+
+      # :80 -> redireciona para HTTPS (e é por aqui que o Let's Encrypt valida).
+      - traefik.http.routers.rustdesk-api.rule=Host(`${API_DOMAIN}`)
+      - traefik.http.routers.rustdesk-api.entrypoints=web
+      - traefik.http.routers.rustdesk-api.middlewares=rustdesk-api-redirect
+      - traefik.http.middlewares.rustdesk-api-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.rustdesk-api-redirect.redirectscheme.permanent=true
+
+      # :443 -> a API.
+      - traefik.http.routers.rustdesk-api-secure.rule=Host(`${API_DOMAIN}`)
+      - traefik.http.routers.rustdesk-api-secure.entrypoints=websecure
+      - traefik.http.routers.rustdesk-api-secure.tls=true
+      - traefik.http.routers.rustdesk-api-secure.tls.certresolver=${TRAEFIK_CERTRESOLVER:-mytlschallenge}
+      - traefik.http.routers.rustdesk-api-secure.service=rustdesk-api-service
+
+      - traefik.http.services.rustdesk-api-service.loadbalancer.server.port=21114
+
+networks:
+  # Rede do Traefik já existente (a do compose do n8n, por padrão).
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-n8n_default}

@@ -12,6 +12,35 @@ use crate::groups;
 use crate::util::{i, opt_s, parse_value, s};
 use crate::AppState;
 
+/// Lê um valor de `settings` (vazio se não existir).
+async fn setting(db: &Db, key: &str) -> ApiResult<String> {
+    Ok(sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(db)
+        .await?
+        .unwrap_or_default())
+}
+
+/// Mesmo cálculo do `get_version_number` do cliente (hbb_common): "1.4.9" -> 1004090.
+/// Usado para comparar com o `ver` que o cliente manda no heartbeat.
+fn version_number(v: &str) -> i64 {
+    let mut parts = v.split('-');
+    let mut n = 0i64;
+    if let Some(head) = parts.next() {
+        let mut last = 0;
+        for x in head.split('.') {
+            last = x.parse::<i64>().unwrap_or(0);
+            n = n * 1000 + last;
+        }
+        n -= last;
+        n += last * 10;
+    }
+    if let Some(patch) = parts.next() {
+        n += patch.parse::<i64>().unwrap_or(0);
+    }
+    n
+}
+
 /// `POST /api/heartbeat` — chega a cada 15 s (3 s com sessões ativas), sem token.
 /// Se ainda não temos o sysinfo deste ID (banco novo, por exemplo), pedimos com `sysinfo: true`.
 /// Se o dispositivo pertence a um grupo cujas opções mudaram desde o `modified_at` que o
@@ -110,6 +139,26 @@ pub async fn heartbeat(State(st): State<AppState>, body: Bytes) -> ApiResult<Jso
         .bind(&id)
         .execute(&st.db)
         .await?;
+
+        // Auto-update: se há uma versão publicada (`client_version`) mais nova que a que o cliente
+        // roda (`ver` no heartbeat), manda ele baixar o instalador de `download_url` e aplicar. O
+        // token do grupo autentica o download em `/downloads`. O cliente personalizado só troca
+        // quando está ocioso.
+        let client_ver = i(&v, "ver").unwrap_or(0);
+        if client_ver > 0 {
+            let target_ver = setting(&st.db, "client_version").await?;
+            let download_url = setting(&st.db, "download_url").await?;
+            if !target_ver.is_empty()
+                && !download_url.is_empty()
+                && version_number(&target_ver) > client_ver
+            {
+                resp["update"] = json!({
+                    "version": target_ver,
+                    "url": download_url,
+                    "token": group.enroll_token,
+                });
+            }
+        }
     }
     let strategy: Option<(String, i64)> = sqlx::query_as(
         "SELECT st.options, st.options_updated_at FROM devices d \

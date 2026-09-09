@@ -470,7 +470,7 @@ async function pageAudit(main) {
 // ---------------------------------------------------------------- configurações
 async function pageConfig(main) {
   const s = await api('/admin/api/settings');
-  const f = { server_host: el('input', { value: s.server_host, placeholder: 'rustdesk.exemplo.com.br' }), server_key: el('input', { value: s.server_key, placeholder: 'conteúdo de id_ed25519.pub' }), api_url: el('input', { value: s.api_url || location.origin, placeholder: location.origin }), download_url: el('input', { value: s.download_url, placeholder: 'https://github.com/…/releases/download/…/RustdeskOlirio-1.4.9-x86_64.exe' }), client_app_name: el('input', { value: s.client_app_name || '', placeholder: 'ex.: RustdeskOlirio' }) };
+  const f = { server_host: el('input', { value: s.server_host, placeholder: 'rustdesk.exemplo.com.br' }), server_key: el('input', { value: s.server_key, placeholder: 'conteúdo de id_ed25519.pub' }), api_url: el('input', { value: s.api_url || location.origin, placeholder: location.origin }), download_url: el('input', { value: s.download_url, placeholder: 'https://github.com/…/releases/download/…/RustdeskOlirio-1.4.9-x86_64.exe' }), client_app_name: el('input', { value: s.client_app_name || '', placeholder: 'ex.: RustdeskOlirio' }), client_version: el('input', { value: s.client_version || '', placeholder: 'ex.: 1.4.9' }) };
   Object.values(f).forEach(i => i.style.width = '100%');
   const envText = `API_AUTH_URL=http://127.0.0.1:${location.port || 21114}/api/internal/authorize\nAPI_AUTH_SECRET=${s.hbbs_secret}`;
   const reqGroup = el('input', { type: 'checkbox', checked: s.require_group === '1' });
@@ -488,7 +488,7 @@ async function pageConfig(main) {
     const files = await api('/admin/api/downloads');
     filesList.replaceChildren(table(['Arquivo', 'Tamanho', 'Enviado em', ''], files.map(x => [el('span', { class: 'mono' }, x.name), (x.size / 1048576).toFixed(1) + ' MB', fmtTs(x.modified_at),
       el('div', { class: 'actions' },
-        el('button', { class: 'small', onclick: async () => { const url = (f.api_url.value || location.origin).replace(/\/$/, '') + '/downloads/' + x.name; f.download_url.value = url; try { await api('/admin/api/settings', { method: 'PUT', body: { download_url: url } }); toast('O script passa a instalar ' + x.name); } catch (e) { fail(e); } } }, 'usar no script'),
+        el('button', { class: 'small', onclick: async () => { const url = (f.api_url.value || location.origin).replace(/\/$/, '') + '/downloads/' + x.name; f.download_url.value = url; const m = x.name.match(/-(\d+\.\d+\.\d+)-/); const body = { download_url: url }; if (m) { body.client_version = m[1]; f.client_version.value = m[1]; } try { await api('/admin/api/settings', { method: 'PUT', body }); toast('O script instala ' + x.name + (m ? ' e as máquinas atualizam para ' + m[1] : '')); } catch (e) { fail(e); } } }, 'usar no script'),
         el('button', { class: 'small danger', onclick: async () => { if (!confirm('Apagar ' + x.name + '?')) return; try { await api('/admin/api/downloads/' + encodeURIComponent(x.name), { method: 'DELETE' }); loadFiles(); } catch (e) { fail(e); } } }, 'apagar'))]), 'Nenhum instalador enviado.'));
   };
   filesCard.append(filesList, el('div', { class: 'row', style: 'margin-top:10px' }, field('Enviar instalador (.exe)', fileIn), el('div', {}, el('button', { onclick: async () => {
@@ -501,7 +501,7 @@ async function pageConfig(main) {
     } catch (e) { fail(e); } } }, 'Enviar'))));
   loadFiles();
   main.replaceChildren(el('h1', {}, 'Configurações', help('Dados usados para montar o script de instalação: endereço e chave do seu servidor RustDesk, endereço deste console e o instalador. Com um cliente personalizado (nome do app), o script instala esse cliente, que já traz servidor e chave fixos e recebe a senha do grupo sozinho.')),
-    el('div', { class: 'form', style: 'max-width:720px' }, field('Servidor de ID (hbbs)', f.server_host), field('Chave pública do servidor (Key)', f.server_key), field('URL da API', f.api_url), field('Link do instalador (Windows .exe)', f.download_url), field('Cliente personalizado: nome do app (vazio = RustDesk oficial)', f.client_app_name),
+    el('div', { class: 'form', style: 'max-width:720px' }, field('Servidor de ID (hbbs)', f.server_host), field('Chave pública do servidor (Key)', f.server_key), field('URL da API', f.api_url), field('Link do instalador (Windows .exe)', f.download_url), field('Cliente personalizado: nome do app (vazio = RustDesk oficial)', f.client_app_name), el('div', {}, field('Versão publicada do cliente', f.client_version), help('As máquinas dos grupos que rodam uma versão mais antiga baixam este instalador e se atualizam sozinhas (quando ociosas). Preenchido automaticamente ao clicar "usar no script". Deixe vazio para não forçar atualização.')),
       el('div', { style: 'margin-top:12px' }, el('button', { class: 'primary', onclick: async () => { try { await api('/admin/api/settings', { method: 'PUT', body: Object.fromEntries(Object.entries(f).map(([k, i]) => [k, i.value])) }); toast('Salvo'); } catch (e) { fail(e); } } }, 'Salvar'))),
     hbbsCard, filesCard);
 }

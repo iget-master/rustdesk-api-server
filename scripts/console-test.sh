@@ -70,6 +70,18 @@ must "atribuída ao grupo pelo console, o heartbeat entrega a senha" "$(hb_plain
 must "entregue uma vez, não reenvia no heartbeat seguinte" "$(hb_plain "$DEV3")" 'has("password")|not'
 must "console mostra sincronizada mesmo sem token" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV3\")) | .[0].sync_client==true and .[0].password_synced==true"
 
+echo "== auto-update pelo heartbeat"
+hb_ver() { j -X POST "$API/api/heartbeat" -d "{\"id\":\"$DEV\",\"uuid\":\"dGVzdA==\",\"ver\":$1,\"modified_at\":0}"; }
+# sem client_version configurado: nada de update
+must "sem versão publicada não manda update" "$(hb_ver 1004090)" 'has("update")|not'
+j -X PUT "$API/admin/api/settings" -H "$A" -d '{"client_version":"1.4.10","download_url":"http://api.example.com:21114/downloads/RustdeskOlirio-1.4.10-x86_64.exe"}' >/dev/null
+# cliente em 1.4.9 (1004090) < 1.4.10 (1004100): recebe update com token do grupo
+must "cliente mais antigo recebe update" "$(hb_ver 1004090)" '.update.version=="1.4.10" and (.update.url|test("RustdeskOlirio-1.4.10")) and (.update.token|length)>20'
+# cliente já na versão nova: nada
+must "cliente já atualizado não recebe update" "$(hb_ver 1004100)" 'has("update")|not'
+# máquina fora de grupo não recebe update (não é gerenciada)
+must "máquina fora de grupo não recebe update" "$(j -X POST "$API/api/heartbeat" -d '{"id":"777000777","uuid":"dGVzdA==","ver":1004090,"modified_at":0}')" 'has("update")|not'
+
 echo "== instaladores hospedados na API"
 FAKE=/tmp/rdapi-fake-installer.bin; printf 'fake-installer' > "$FAKE"
 must "upload" "$(curl -sS -X PUT "$API/admin/api/downloads/Fake-1.0-x86_64.exe?use=1" -H "$A" -H 'Content-Type: application/octet-stream' --data-binary "@$FAKE")" '.name=="Fake-1.0-x86_64.exe" and .size==14 and .used==true'

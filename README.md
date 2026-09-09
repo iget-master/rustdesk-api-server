@@ -183,6 +183,13 @@ heartbeat, exibido na coluna **IP na LAN** e pesquisável na busca de dispositiv
 achar a máquina dentro da rede do posto. O cliente comum não manda esse campo, e um heartbeat
 sem ele preserva o último IP conhecido.
 
+Auto-update: o ajuste **Versão publicada do cliente** (`client_version`) mais o **Link do
+instalador** (`download_url`) fazem a API mandar, no heartbeat, um bloco `update` para as máquinas
+de grupo que rodam uma versão mais antiga (compara com o `ver` do heartbeat). O cliente
+personalizado baixa o instalador de `/downloads` (autenticado com o token do grupo, que a API
+inclui no bloco) e aplica pelo fluxo nativo `--update`, só quando está ocioso. Ao clicar *usar no
+script* num instalador enviado, o console já preenche `client_version` a partir do nome do arquivo.
+
 Para usar: em *Configurações*, envie o instalador gerado pelo build em **Instaladores no
 servidor** (ou deixe o workflow enviar sozinho), clique em *usar no script* e informe o nome do
 app em **Cliente personalizado**; os scripts de instalação passam a instalar esse cliente. Os

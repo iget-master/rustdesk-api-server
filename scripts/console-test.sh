@@ -37,6 +37,17 @@ must "enroll" "$(j -X POST "$API/api/enroll" -d "{\"token\":\"$ENROLL\",\"id\":\
 j -X POST "$API/api/sysinfo" -d "{\"id\":\"$DEV\",\"uuid\":\"dGVzdA==\",\"hostname\":\"PDV-01\",\"username\":\"caixa\",\"os\":\"windows / Windows 10 Pro\",\"version\":\"1.4.2\",\"cpu\":\"i3\",\"memory\":\"8GB\"}" >/dev/null
 must "dispositivo no grupo" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV\" and .hostname==\"PDV-01\")) | length == 1"
 
+echo "== IP na LAN pelo heartbeat"
+devs() { j "$API/admin/api/devices?group=$SID" -H "$A"; }
+hb_ip() { j -X POST "$API/api/heartbeat" -d "{\"id\":\"$DEV\",\"uuid\":\"dGVzdA==\",\"ver\":1004020,\"modified_at\":0${1:+,\"lan_ip\":\"$1\"}}" >/dev/null; }
+hb_ip 192.168.15.42
+must "console mostra o IP da LAN" "$(devs)" "any(.[]; .id==\"$DEV\" and .lan_ip==\"192.168.15.42\")"
+must "busca por IP encontra a máquina" "$(j "$API/admin/api/devices?q=192.168.15" -H "$A")" "any(.[]; .id==\"$DEV\")"
+hb_ip ""
+must "heartbeat sem IP preserva o último" "$(devs)" "any(.[]; .id==\"$DEV\" and .lan_ip==\"192.168.15.42\")"
+hb_ip 192.168.15.77
+must "IP novo substitui o anterior" "$(devs)" "any(.[]; .id==\"$DEV\" and .lan_ip==\"192.168.15.77\")"
+
 echo "== cliente personalizado: senha pelo heartbeat"
 hb() { j -X POST "$API/api/heartbeat" -d "{\"id\":\"$1\",\"uuid\":\"dGVzdA==\",\"ver\":1004020,\"modified_at\":0,\"enroll_token\":\"$2\",\"password_tag\":\"$3\"}"; }
 HB=$(hb "$DEV" "$ENROLL" "")

@@ -328,8 +328,8 @@ async function pageGroup(main, id) {
   const others = allDevices.filter(d => d.group_id !== id);
   const addSel = select([['', '— escolher máquina —'], ...others.map(d => [d.id, `${d.hostname || d.id} (${d.id})${d.group_name ? ' — ' + d.group_name : ''}`])], '');
   const devCard = el('div', {}, el('h2', {}, `Máquinas (${devices.length})`),
-    table(['', 'ID', 'Host', 'Usuário SO', 'SO', 'Versão', 'Senha', 'Último heartbeat', 'Nota', ''], devices.map(d => [
-      el('span', { class: 'dot' + (d.online ? ' on' : '') }), el('span', { class: 'mono' }, d.id), d.hostname, d.username, d.platform || d.os, d.version, syncTag(d), fmtAgo(d.last_seen_at, now) + ' atrás', d.note,
+    table(['', 'ID', 'Host', 'Usuário SO', 'SO', 'IP na LAN', 'Versão', 'Senha', 'Último heartbeat', 'Nota', ''], devices.map(d => [
+      el('span', { class: 'dot' + (d.online ? ' on' : '') }), el('span', { class: 'mono' }, d.id), d.hostname, d.username, d.platform || d.os, el('span', { class: 'mono' }, d.lan_ip || '—'), d.version, syncTag(d), fmtAgo(d.last_seen_at, now) + ' atrás', d.note,
       el('button', { class: 'small', onclick: async () => { try { await api('/admin/api/devices/' + d.id, { method: 'PUT', body: { group_id: null } }); reload(); } catch (e) { fail(e); } } }, 'remover do grupo')]), 'Nenhuma máquina ainda. Rode o script de instalação abaixo ou adicione uma máquina já conhecida.'),
     el('div', { class: 'row', style: 'margin-top:10px' }, field('Adicionar máquina já conhecida', addSel), el('div', {}, el('button', { onclick: async () => { if (!addSel.value) return; try { await api('/admin/api/devices/' + addSel.value, { method: 'PUT', body: { group_id: id } }); reload(); } catch (e) { fail(e); } } }, 'Adicionar'))));
 
@@ -361,15 +361,15 @@ async function pageGroup(main, id) {
 // ---------------------------------------------------------------- dispositivos
 async function pageDevices(main) {
   const groups = await api('/admin/api/groups');
-  const q = el('input', { placeholder: 'buscar por ID, host, usuário, nota' });
+  const q = el('input', { placeholder: 'buscar por ID, host, usuário, IP, nota' });
   const stSel = select([['', 'todos os grupos'], ['none', 'sem grupo'], ...groups.map(s => [s.id, s.name])], '');
   const list = el('div', {});
   const load = async () => {
     const devices = await api(`/admin/api/devices?group=${encodeURIComponent(stSel.value)}&q=${encodeURIComponent(q.value)}`);
     const now = Math.floor(Date.now() / 1000);
-    list.replaceChildren(table(['', 'ID', 'Host', 'Usuário SO', 'SO', 'Versão', 'Senha', 'Grupo', 'Último heartbeat', 'Nota', ''], devices.map(d => {
+    list.replaceChildren(table(['', 'ID', 'Host', 'Usuário SO', 'SO', 'IP na LAN', 'Versão', 'Senha', 'Grupo', 'Último heartbeat', 'Nota', ''], devices.map(d => {
       const sel = select([['', '— sem grupo —'], ...groups.map(s => [s.id, s.name])], d.group_id ?? '', { onchange: async e => { try { await api('/admin/api/devices/' + d.id, { method: 'PUT', body: { group_id: e.target.value ? Number(e.target.value) : null } }); toast('Grupo atualizado'); load(); } catch (err) { fail(err); } } });
-      return [el('span', { class: 'dot' + (d.online ? ' on' : ''), title: d.online ? 'online' : 'offline' }), el('span', { class: 'mono' }, d.id), d.hostname, d.username, d.platform || d.os, d.version, syncTag(d), sel, d.last_seen_at ? fmtAgo(d.last_seen_at, now) + ' atrás' : 'nunca',
+      return [el('span', { class: 'dot' + (d.online ? ' on' : ''), title: d.online ? 'online' : 'offline' }), el('span', { class: 'mono' }, d.id), d.hostname, d.username, d.platform || d.os, el('span', { class: 'mono' }, d.lan_ip || '—'), d.version, syncTag(d), sel, d.last_seen_at ? fmtAgo(d.last_seen_at, now) + ' atrás' : 'nunca',
         el('span', {}, d.note || '', ' ', el('button', { class: 'small', onclick: async () => { const n = prompt('Nota:', d.note || ''); if (n !== null) { try { await api('/admin/api/devices/' + d.id, { method: 'PUT', body: { note: n } }); load(); } catch (e) { fail(e); } } } }, 'editar')),
         el('button', { class: 'small danger', onclick: async () => { if (!confirm(`Remover ${d.hostname || d.id} do inventário? Volta sozinho no próximo heartbeat.`)) return; try { await api('/admin/api/devices/' + d.id, { method: 'DELETE' }); load(); } catch (e) { fail(e); } } }, 'remover')];
     }), 'Nenhum dispositivo ainda. As máquinas aparecem sozinhas depois de instaladas com o script de um grupo.'));

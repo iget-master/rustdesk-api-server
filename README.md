@@ -175,6 +175,11 @@ grupo, a API responde com `password` + `password_tag` e o cliente aplica na hora
 senha no console atualiza todas as máquinas do grupo em segundos. Uma máquina instalada com o
 token entra no grupo sozinha.
 
+O cliente personalizado também manda o `lan_ip` (o IPv4 da máquina na rede local) em cada
+heartbeat, exibido na coluna **IP na LAN** e pesquisável na busca de dispositivos — útil para
+achar a máquina dentro da rede do posto. O cliente comum não manda esse campo, e um heartbeat
+sem ele preserva o último IP conhecido.
+
 Para usar: em *Configurações*, envie o instalador gerado pelo build em **Instaladores no
 servidor** (ou deixe o workflow enviar sozinho), clique em *usar no script* e informe o nome do
 app em **Cliente personalizado**; os scripts de instalação passam a instalar esse cliente. Os

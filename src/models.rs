@@ -139,11 +139,12 @@ pub struct DeviceRow {
     pub sync_client: i64,
     pub password_synced: i64,
     pub password_synced_at: Option<i64>,
+    pub lan_ip: String,
 }
 
 pub const DEVICE_SELECT: &str = "SELECT d.id, d.uuid, d.hostname, d.username, d.os, d.cpu, d.memory, d.version, \
     d.user_id, u.name AS user_name, d.device_group, d.note, d.conns, d.first_seen_at, d.last_seen_at, \
-    d.group_id, st.name AS group_name, d.sync_client, d.password_synced, d.password_synced_at \
+    d.group_id, st.name AS group_name, d.sync_client, d.password_synced, d.password_synced_at, d.lan_ip \
     FROM devices d LEFT JOIN users u ON u.id = d.user_id LEFT JOIN groups st ON st.id = d.group_id";
 
 /// Sem heartbeat por mais que isso, o dispositivo é considerado offline
@@ -186,6 +187,7 @@ impl DeviceRow {
             "username": self.username,
             "os": self.os,
             "platform": platform_from_os(&self.os),
+            "lan_ip": self.lan_ip,
             "cpu": self.cpu,
             "memory": self.memory,
             "version": self.version,

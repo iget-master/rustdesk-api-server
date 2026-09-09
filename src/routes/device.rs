@@ -33,15 +33,19 @@ pub async fn heartbeat(State(st): State<AppState>, body: Bytes) -> ApiResult<Jso
         .map(Value::to_string)
         .unwrap_or_else(|| "[]".to_owned());
     let t = now();
+    // `lan_ip` só vem do cliente personalizado; quando não vier, preserva o último conhecido.
     sqlx::query(
-        "INSERT INTO devices (id, uuid, conns, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?) \
+        "INSERT INTO devices (id, uuid, conns, lan_ip, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?) \
          ON CONFLICT(id) DO UPDATE SET \
            uuid = CASE WHEN excluded.uuid = '' THEN devices.uuid ELSE excluded.uuid END, \
-           conns = excluded.conns, last_seen_at = excluded.last_seen_at",
+           conns = excluded.conns, \
+           lan_ip = CASE WHEN excluded.lan_ip = '' THEN devices.lan_ip ELSE excluded.lan_ip END, \
+           last_seen_at = excluded.last_seen_at",
     )
     .bind(&id)
     .bind(s(&v, "uuid"))
     .bind(conns)
+    .bind(s(&v, "lan_ip"))
     .bind(t)
     .bind(t)
     .execute(&st.db)

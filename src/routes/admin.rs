@@ -395,9 +395,11 @@ pub async fn devices_list(
         }
     }
     if let Some(term) = q.get("q").map(|x| x.trim()).filter(|x| !x.is_empty()) {
-        filters.push("(d.id LIKE ? OR d.hostname LIKE ? OR d.username LIKE ? OR d.note LIKE ?)");
+        filters.push(
+            "(d.id LIKE ? OR d.hostname LIKE ? OR d.username LIKE ? OR d.note LIKE ? OR d.lan_ip LIKE ?)",
+        );
         let pattern = format!("%{term}%");
-        binds.extend(std::iter::repeat(pattern).take(4));
+        binds.extend(std::iter::repeat(pattern).take(5));
     }
     let where_clause = if filters.is_empty() {
         String::new()

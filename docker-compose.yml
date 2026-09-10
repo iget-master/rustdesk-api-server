@@ -1,4 +1,29 @@
 services:
+  # HTTPS com certificado do Let's Encrypt. Só sobe quando o profile `https` está
+  # ativo — o jeito prático é pôr `COMPOSE_PROFILES=https` no .env, junto com
+  # API_DOMAIN e ACME_EMAIL. Sem isso, a API fica só em HTTP na 21114.
+  traefik:
+    image: traefik:v3.0
+    container_name: rustdesk-traefik
+    restart: unless-stopped
+    profiles: ["https"]
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL:-}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.httpchallenge=true
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+    ports:
+      # A 80 é usada pelo Let's Encrypt para validar o domínio e para redirecionar.
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./letsencrypt:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
   rustdesk-api:
     build: .
     image: rustdesk-api-server:local
@@ -7,7 +32,7 @@ services:
     ports:
       # HTTP direto. Mantenha enquanto houver cliente com o endereço antigo
       # (`http://<dominio>:21114`) fixo dentro dele; depois que a frota migrar
-      # para HTTPS, remova esta seção e a API passa a ser só pelo Traefik.
+      # para HTTPS, remova esta seção e a API fica só atrás do Traefik.
       - "21114:21114"
     volumes:
       - ./data:/data
@@ -16,34 +41,22 @@ services:
       RUSTDESK_API_ADMIN_USER: admin
       RUSTDESK_API_ADMIN_PASSWORD: ${RUSTDESK_API_ADMIN_PASSWORD:-troque-esta-senha}
       RUST_LOG: info
-    networks:
-      - default
-      - traefik
-    # HTTPS pelo Traefik que já roda no servidor (provider Docker, opt-in por label).
-    # Defina API_DOMAIN no .env; sem ele o Traefik ignora este serviço.
     labels:
-      - traefik.enable=${TRAEFIK_ENABLE:-true}
-      # O container está em duas redes; diz ao Traefik por qual falar com ele.
-      - traefik.docker.network=${TRAEFIK_NETWORK:-n8n_default}
+      # Ignorado se o Traefik não estiver rodando (profile `https` desligado).
+      - traefik.enable=true
 
       # :80 -> redireciona para HTTPS (e é por aqui que o Let's Encrypt valida).
-      - traefik.http.routers.rustdesk-api.rule=Host(`${API_DOMAIN}`)
+      - traefik.http.routers.rustdesk-api.rule=Host(`${API_DOMAIN:-localhost}`)
       - traefik.http.routers.rustdesk-api.entrypoints=web
       - traefik.http.routers.rustdesk-api.middlewares=rustdesk-api-redirect
       - traefik.http.middlewares.rustdesk-api-redirect.redirectscheme.scheme=https
       - traefik.http.middlewares.rustdesk-api-redirect.redirectscheme.permanent=true
 
       # :443 -> a API.
-      - traefik.http.routers.rustdesk-api-secure.rule=Host(`${API_DOMAIN}`)
+      - traefik.http.routers.rustdesk-api-secure.rule=Host(`${API_DOMAIN:-localhost}`)
       - traefik.http.routers.rustdesk-api-secure.entrypoints=websecure
       - traefik.http.routers.rustdesk-api-secure.tls=true
-      - traefik.http.routers.rustdesk-api-secure.tls.certresolver=${TRAEFIK_CERTRESOLVER:-mytlschallenge}
+      - traefik.http.routers.rustdesk-api-secure.tls.certresolver=le
       - traefik.http.routers.rustdesk-api-secure.service=rustdesk-api-service
 
       - traefik.http.services.rustdesk-api-service.loadbalancer.server.port=21114
-
-networks:
-  # Rede do Traefik já existente (a do compose do n8n, por padrão).
-  traefik:
-    external: true
-    name: ${TRAEFIK_NETWORK:-n8n_default}

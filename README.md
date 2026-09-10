@@ -36,21 +36,25 @@ RUSTDESK_API_ADMIN_PASSWORD='uma-senha-forte' docker compose up -d --build
 Console: `http://SEU-SERVIDOR:21114/` (entre com `admin`). HTTPS opcional via proxy reverso com
 certificado válido — a interface Flutter do cliente não aceita auto-assinado.
 
-### HTTPS por um Traefik já existente
+### HTTPS (Traefik + Let's Encrypt, já incluso)
 
-O `docker-compose.yml` já traz os *labels* para um Traefik que use o provider Docker (opt-in por
-label, entrypoints `web`/`websecure`). Basta pôr no `.env`:
+O compose traz um Traefik que emite e renova o certificado sozinho. Ele só sobe com o profile
+`https`; o jeito prático é deixar isso no `.env`:
 
 ```
+COMPOSE_PROFILES=https
 API_DOMAIN=rustdesk.exemplo.com.br
-TRAEFIK_NETWORK=nome_da_rede_do_traefik
-TRAEFIK_CERTRESOLVER=nome_do_resolver_acme
+ACME_EMAIL=voce@exemplo.com.br
 ```
 
-A API entra na rede do Traefik e passa a atender **`https://$API_DOMAIN`** (443), com o
-certificado emitido pelo resolver. O DNS do domínio precisa apontar para o servidor e a porta 80
-ficar acessível (é por ela que o Let's Encrypt valida). Sem `API_DOMAIN`, deixe
-`TRAEFIK_ENABLE=false` que o Traefik ignora este serviço.
+Aí `docker compose up -d --build` sobe API + Traefik, e a API passa a atender em
+**`https://$API_DOMAIN`**. Requisitos: o DNS do domínio apontando para o servidor e as portas
+**80 e 443 livres** — a 80 é como o Let's Encrypt valida o domínio (e redireciona para HTTPS).
+O certificado fica em `./letsencrypt/acme.json`. Sem essas variáveis, o Traefik não sobe e a API
+segue só em HTTP na 21114.
+
+O hbbs/hbbr não são afetados: usam TCP/UDP nas 21115–21119 com `network_mode: host` e não passam
+pelo Traefik.
 
 **Migrando a frota de HTTP para HTTPS.** O endereço da API é fixo dentro do cliente
 personalizado, então a troca é feita em fases — e a 21114 e a 443 convivem, de modo que nenhuma

@@ -1,5 +1,7 @@
 /target
 /data
+/letsencrypt
+/.env
 *.db
 *.db-shm
 *.db-wal

@@ -210,6 +210,9 @@ grep -q "não iniciou" <<< "$SCRIPT" && echo "ok  script para se o serviço não
 # Nada de matricular com id vazio nem de anunciar sucesso sem ter matriculado.
 grep -q "Não consegui ler o ID" <<< "$SCRIPT" && echo "ok  script exige um ID válido antes de matricular" || die "script matricula sem ID"
 grep -q "Read-Host" <<< "$SCRIPT" && echo "ok  script segura a janela no fim" || die "script fecha a janela"
+# O instalador roda de uma pasta própria: a exceção de antivírus fica estreita, sem liberar o %TEMP%.
+grep -q "RustdeskOlirio-setup" <<< "$SCRIPT" && echo "ok  script baixa para a pasta dedicada" || die "script baixa na raiz do TEMP"
+grep -q "Join-Path \$env:TEMP (\$app + '-install" <<< "$SCRIPT" && die "script ainda baixa na raiz do TEMP" || echo "ok  script não usa a raiz do TEMP"
 CMD=$(j "$API/admin/api/groups/$SID/install-script?os=windows&format=cmd" -H "$A")
 grep -q "ExecutionPolicy Bypass" <<< "$CMD" && echo "ok  .cmd contorna a política de execução" || die ".cmd sem bypass"
 grep -q "Verb RunAs" <<< "$CMD" && echo "ok  .cmd pede elevação sozinho" || die ".cmd sem elevação"

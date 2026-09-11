@@ -274,6 +274,11 @@ const WIN_INSTALL_PS1: &str = r##"# @APPNAME@ — Grupo: @GROUPNAME@
 # Rode como Administrador. Se salvar em arquivo, chame assim (o .ps1 não roda por duplo clique):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\instalar.ps1
 # Pelo console, o botão "baixar .cmd" gera um arquivo que já faz isso sozinho.
+#
+# Antivírus: o instalador não é assinado, então escudos comportamentais (Avast, por exemplo)
+# podem matá-lo no meio e mandá-lo para a quarentena. Se acontecer, libere estes dois caminhos:
+#   C:\Program Files\@APPNAME@\
+#   %TEMP%\@APPNAME@-setup\
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -434,8 +439,15 @@ pub async fn groups_install_script(
         } else {
             format!(
                 "  if (Test-Path $exe) {{\n    Write-Host \"$app já instalado em $exe.\"\n  }} else {{\n\
-                 \x20   $pacote = Join-Path $env:TEMP ($app + '-install-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.exe')\n\
-                 \x20   Write-Host 'Baixando o instalador...'\n\
+                 \x20   # Pasta dedicada: antivírus com escudo comportamental (o Avast marca este\n\
+                 \x20   # instalador como IDP.HELU.*) matam o processo do instalador, e a exceção\n\
+                 \x20   # precisa apontar para onde ele roda. Uma pasta própria deixa a exceção\n\
+                 \x20   # estreita, em vez de liberar o %TEMP% inteiro.\n\
+                 \x20   $setup = Join-Path $env:TEMP ($app + '-setup')\n\
+                 \x20   New-Item -ItemType Directory -Path $setup -Force | Out-Null\n\
+                 \x20   Get-ChildItem $setup -Filter *.exe -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue\n\
+                 \x20   $pacote = Join-Path $setup ($app + '-install-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.exe')\n\
+                 \x20   Write-Host \"Baixando o instalador para $setup ...\"\n\
                  \x20   Invoke-WebRequest -Uri {url} -OutFile $pacote -Headers @{{ 'X-Enroll-Token' = $token }} -UseBasicParsing\n\
                  \x20   Write-Host 'Instalando (silencioso)...'\n\
                  \x20   Start-Process -FilePath $pacote -ArgumentList '--silent-install' -Wait\n\

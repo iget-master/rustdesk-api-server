@@ -194,7 +194,7 @@ echo "== rotação de senha"
 NEW=$(j -X POST "$API/admin/api/groups/$SID/rotate-password" -H "$A" | jq -r .password)
 [ "$NEW" != "$PASS" ] && [ ${#NEW} -ge 8 ] || die "rotação de senha"
 must "AB atualizado com a nova senha" "$(j -X POST "$API/api/ab/peers?current=1&pageSize=100&ab=$GUID" -H "$E" -H 'Content-Length: 0')" ".data[0].password==\"$NEW\""
-j "$API/admin/api/groups/$SID/install-script?os=windows" -H "$A" | grep -q -- "--password '$NEW'" && echo "ok  script Windows traz a senha nova" || die "script Windows"
+j "$API/admin/api/groups/$SID/install-script?os=windows" -H "$A" | grep -q "\$senha = '$NEW'" && echo "ok  script Windows traz a senha nova" || die "script Windows"
 j "$API/admin/api/groups/$SID/install-script?os=linux" -H "$A" | grep -q "$ENROLL" && echo "ok  script Linux traz o token de matrícula" || die "script Linux"
 must "heartbeat entrega a senha rotacionada" "$(hb "$DEV" "$ENROLL" "$PTAG")" ".password==\"$NEW\""
 must "máquina do console (sem token) recebe a senha rotacionada" "$(hb_plain "$DEV3")" ".password==\"$NEW\""
@@ -202,8 +202,19 @@ must "console marca a senha como pendente" "$(j "$API/admin/api/devices?group=$S
 must "settings aceita o cliente personalizado" "$(j -X PUT "$API/admin/api/settings" -H "$A" -d '{"client_app_name":"RustdeskOlirio"}')" '.client_app_name=="RustdeskOlirio"'
 SCRIPT=$(j "$API/admin/api/groups/$SID/install-script?os=windows" -H "$A")
 grep -q "Program Files\\\\RustdeskOlirio\\\\RustdeskOlirio.exe" <<< "$SCRIPT" && echo "ok  script instala o cliente personalizado" || die "script cliente personalizado"
-grep -q -- "--option enroll-token '$ENROLL'" <<< "$SCRIPT" && echo "ok  script grava o token de matrícula" || die "script enroll-token"
+grep -q "\$token = '$ENROLL'" <<< "$SCRIPT" && echo "ok  script grava o token de matrícula" || die "script enroll-token"
 grep -q "custom-rendezvous-server" <<< "$SCRIPT" && die "script do cliente personalizado não deve configurar servidor" || echo "ok  script não mexe no servidor (fixo no cliente)"
+# O serviço é o que recebe --option/--password por IPC: sem ele o cliente descarta tudo calado.
+grep -q -- "--install-service" <<< "$SCRIPT" && echo "ok  script garante o serviço do Windows" || die "script não cuida do serviço"
+grep -q "não iniciou" <<< "$SCRIPT" && echo "ok  script para se o serviço não subir" || die "script segue sem serviço"
+# Nada de matricular com id vazio nem de anunciar sucesso sem ter matriculado.
+grep -q "Não consegui ler o ID" <<< "$SCRIPT" && echo "ok  script exige um ID válido antes de matricular" || die "script matricula sem ID"
+grep -q "Read-Host" <<< "$SCRIPT" && echo "ok  script segura a janela no fim" || die "script fecha a janela"
+CMD=$(j "$API/admin/api/groups/$SID/install-script?os=windows&format=cmd" -H "$A")
+grep -q "ExecutionPolicy Bypass" <<< "$CMD" && echo "ok  .cmd contorna a política de execução" || die ".cmd sem bypass"
+grep -q "Verb RunAs" <<< "$CMD" && echo "ok  .cmd pede elevação sozinho" || die ".cmd sem elevação"
+[ "$(grep -c -- '#--POWERSHELL--#' <<< "$CMD")" = 2 ] && echo "ok  .cmd tem o marcador do trecho PowerShell" || die ".cmd sem marcador"
+grep -q "^pause" <<< "$CMD" && echo "ok  .cmd não fecha a janela no fim" || die ".cmd sem pause"
 j -X PUT "$API/admin/api/settings" -H "$A" -d '{"client_app_name":""}' >/dev/null
 
 echo "== derrubar sessão"

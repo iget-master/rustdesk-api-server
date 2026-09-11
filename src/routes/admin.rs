@@ -264,6 +264,108 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Script de instalação do Windows. Os marcadores `@NOME@` são trocados por literais PowerShell já
+/// entre aspas (`ps_quote`) ou por blocos inteiros. Ele é feito para falhar alto: cada etapa é
+/// conferida, porque as opções do cliente (`--option`, `--password`) vão por IPC para o serviço e
+/// são **descartadas em silêncio** quando o serviço não está no ar — foi assim que uma máquina
+/// ficou "instalada" sem token nem senha.
+const WIN_INSTALL_PS1: &str = r##"# @APPNAME@ — Grupo: @GROUPNAME@
+# Instala o cliente, liga no seu servidor, aplica a senha do grupo e matricula esta máquina.
+# Rode como Administrador. Se salvar em arquivo, chame assim (o .ps1 não roda por duplo clique):
+#   powershell -NoProfile -ExecutionPolicy Bypass -File .\instalar.ps1
+# Pelo console, o botão "baixar .cmd" gera um arquivo que já faz isso sozinho.
+
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
+$app   = @APP@
+$exe   = @EXE@
+$token = @TOKEN@
+$api   = @API@
+$senha = @SENHA@
+$grupo = @GRUPO@
+$erro  = $null
+function Etapa($t) { Write-Host ''; Write-Host ('== ' + $t) -ForegroundColor Cyan }
+
+try {
+  $eu = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+  if (-not $eu.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Rode como Administrador (botão direito no PowerShell > Executar como administrador).'
+  }
+
+  Etapa 'Instalação'
+@INSTALL@
+
+  Etapa 'Serviço do Windows'
+  # Sem o serviço no ar, tudo abaixo é descartado em silêncio: as opções vão por IPC para ele.
+  if (-not (Get-Service -Name $app -ErrorAction SilentlyContinue)) {
+    Write-Host 'Serviço ausente — criando.'
+    Start-Process -FilePath $exe -ArgumentList '--install-service' -Wait
+    for ($i = 0; $i -lt 30 -and -not (Get-Service -Name $app -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Seconds 1 }
+  }
+  if (-not (Get-Service -Name $app -ErrorAction SilentlyContinue)) {
+    throw ("O serviço $app não foi criado. Rode à mão: & '" + $exe + "' --install-service")
+  }
+  if ((Get-Service -Name $app).Status -ne 'Running') { Start-Service -Name $app }
+  for ($i = 0; $i -lt 30 -and (Get-Service -Name $app).Status -ne 'Running'; $i++) { Start-Sleep -Seconds 1 }
+  if ((Get-Service -Name $app).Status -ne 'Running') { throw "O serviço $app não iniciou." }
+  Write-Host "Serviço $app rodando."
+
+  Etapa 'Configuração'
+@SERVEROPTS@
+  & $exe --option approve-mode 'password' | Out-Null
+  & $exe --option verification-method 'use-permanent-password' | Out-Null
+  & $exe --option enroll-token $token | Out-Null
+  Start-Sleep -Milliseconds 500
+  $lido = "$(& $exe --option enroll-token | Select-Object -Last 1)".Trim()
+  if ($lido -ne $token) { throw 'O cliente não gravou o token de matrícula (o serviço recusou a configuração).' }
+  $res = "$(& $exe --password $senha | Select-Object -Last 1)".Trim()
+  if ($res -ne 'Done!') { throw ('Não consegui gravar a senha do grupo: ' + $res) }
+  Write-Host 'Token de matrícula e senha do grupo aplicados.'
+
+  Etapa 'Matrícula'
+  $id = ''
+  for ($i = 0; $i -lt 15; $i++) {
+    $id = "$(& $exe --get-id | Select-Object -Last 1)".Trim()
+    if ($id -match '^[0-9]{6,}$') { break }
+    Start-Sleep -Seconds 2
+  }
+  if ($id -notmatch '^[0-9]{6,}$') { throw ("Não consegui ler o ID desta máquina (li '" + $id + "').") }
+  $body = @{ token = $token; id = $id; hostname = $env:COMPUTERNAME } | ConvertTo-Json
+  Invoke-RestMethod -Method Post -Uri ($api + '/api/enroll') -ContentType 'application/json' -Body $body | Out-Null
+  Write-Host ''
+  Write-Host "Pronto: máquina $id matriculada no grupo $grupo." -ForegroundColor Green
+}
+catch {
+  $erro = $_
+  Write-Host ''
+  Write-Host ('FALHOU: ' + $erro) -ForegroundColor Red
+}
+if ($PSCommandPath) { Write-Host ''; Read-Host 'Enter para fechar' | Out-Null }
+if ($erro) { exit 1 }
+"##;
+
+/// Mesmo script embrulhado num `.cmd`: pede elevação, roda o PowerShell com `-ExecutionPolicy
+/// Bypass` (o padrão do Windows recusa `.ps1`) e dá `pause` no fim, para a janela não fechar
+/// levando o erro junto. O `LastIndexOf` acha o marcador da segunda vez — a primeira é esta linha.
+const WIN_INSTALL_CMD: &str = r##"@echo off
+chcp 65001 >nul
+setlocal
+set "SELF=%~f0"
+if /i "%~1"=="-elevado" goto :rodar
+net session >nul 2>&1
+if not errorlevel 1 goto :rodar
+echo Pedindo privilegios de administrador...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:SELF -Verb RunAs -ArgumentList '-elevado'"
+exit /b
+:rodar
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=[IO.File]::ReadAllText($env:SELF,[Text.Encoding]::UTF8); Invoke-Expression $t.Substring($t.LastIndexOf('#--POWERSHELL--#'))"
+echo.
+pause
+exit /b
+#--POWERSHELL--#
+"##;
+
 pub async fn groups_install_script(
     State(st): State<AppState>,
     user: AuthUser,
@@ -327,55 +429,53 @@ pub async fn groups_install_script(
         // vem com servidor, relay, API e chave fixos; só precisa do token de matrícula.
         let app = if custom_app.is_empty() { "RustDesk" } else { custom_app.as_str() };
         let exe_name = if custom_app.is_empty() { "rustdesk.exe".to_owned() } else { format!("{custom_app}.exe") };
-        let mut lines = vec![
-            format!("# {app} — Grupo: {}", group.name),
-            "# Execute no PowerShell como Administrador: instala (se necessário), configura o servidor,".to_owned(),
-            "# define a senha permanente do grupo e matricula esta máquina no console.".to_owned(),
-            "$ErrorActionPreference = 'Stop'".to_owned(),
-            format!("$exe = 'C:\\Program Files\\{app}\\{exe_name}'"),
-        ];
-        if download.is_empty() {
-            lines.push("if (-not (Test-Path $exe)) { throw 'Instale o RustDesk primeiro (link do instalador não configurado)' }".to_owned());
+        let install = if download.is_empty() {
+            "  if (-not (Test-Path $exe)) { throw ('Instale o ' + $app + ' primeiro: o link do instalador não está preenchido em Configurações.') }\n  Write-Host \"$app já instalado.\"".to_owned()
         } else {
-            lines.extend([
-                "if (-not (Test-Path $exe)) {".to_owned(),
-                format!("  $installer = Join-Path $env:TEMP '{app}-install.exe'"),
-                format!(
-                    "  Invoke-WebRequest -Uri {} -OutFile $installer -Headers @{{ 'X-Enroll-Token' = {} }}",
-                    ps_quote(&download),
-                    ps_quote(&group.enroll_token)
-                ),
-                "  Start-Process -FilePath $installer -ArgumentList '--silent-install' -Wait".to_owned(),
-                "  Start-Sleep -Seconds 8".to_owned(),
-                "}".to_owned(),
-            ]);
-        }
-        if custom_app.is_empty() {
-            lines.push(format!("& $exe --option custom-rendezvous-server {}", ps_quote(&host)));
+            format!(
+                "  if (Test-Path $exe) {{\n    Write-Host \"$app já instalado em $exe.\"\n  }} else {{\n\
+                 \x20   $pacote = Join-Path $env:TEMP ($app + '-install-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.exe')\n\
+                 \x20   Write-Host 'Baixando o instalador...'\n\
+                 \x20   Invoke-WebRequest -Uri {url} -OutFile $pacote -Headers @{{ 'X-Enroll-Token' = $token }} -UseBasicParsing\n\
+                 \x20   Write-Host 'Instalando (silencioso)...'\n\
+                 \x20   Start-Process -FilePath $pacote -ArgumentList '--silent-install' -Wait\n\
+                 \x20   for ($i = 0; $i -lt 60 -and -not (Test-Path $exe); $i++) {{ Start-Sleep -Seconds 1 }}\n\
+                 \x20   Remove-Item $pacote -Force -ErrorAction SilentlyContinue\n\
+                 \x20   if (-not (Test-Path $exe)) {{ throw ('A instalação não concluiu: não encontrei ' + $exe) }}\n\
+                 \x20   Write-Host \"$app instalado.\"\n  }}",
+                url = ps_quote(&download)
+            )
+        };
+        let server_opts = if custom_app.is_empty() {
+            let mut o = vec![format!(
+                "  & $exe --option custom-rendezvous-server {} | Out-Null",
+                ps_quote(&host)
+            )];
             if !key.is_empty() {
-                lines.push(format!("& $exe --option key {}", ps_quote(&key)));
+                o.push(format!("  & $exe --option key {} | Out-Null", ps_quote(&key)));
             }
-            lines.push(format!("& $exe --option api-server {}", ps_quote(&api)));
+            o.push(format!("  & $exe --option api-server {} | Out-Null", ps_quote(&api)));
+            o.join("\n")
         } else {
-            lines.push("# Servidor, relay, API e chave já vêm fixos no cliente personalizado.".to_owned());
-        }
-        lines.extend([
-            "& $exe --option approve-mode 'password'".to_owned(),
-            "& $exe --option verification-method 'use-permanent-password'".to_owned(),
-            format!("& $exe --option enroll-token {}", ps_quote(&group.enroll_token)),
-            format!("& $exe --password {}", ps_quote(&group.password)),
-            "$id = (& $exe --get-id | Select-Object -Last 1).Trim()".to_owned(),
-            format!(
-                "$body = @{{ token = {}; id = $id; hostname = $env:COMPUTERNAME }} | ConvertTo-Json",
-                ps_quote(&group.enroll_token)
-            ),
-            format!(
-                "Invoke-RestMethod -Method Post -Uri {} -ContentType 'application/json' -Body $body",
-                ps_quote(&format!("{api}/api/enroll"))
-            ),
-            format!("Write-Host \"Máquina $id matriculada no grupo {}.\"", group.name),
-        ]);
-        lines.join("\r\n") + "\r\n"
+            "  # Servidor, relay, API e chave já vêm fixos no cliente personalizado.".to_owned()
+        };
+        let ps = WIN_INSTALL_PS1
+            .replace("@APPNAME@", app)
+            .replace("@GROUPNAME@", &group.name)
+            .replace("@APP@", &ps_quote(app))
+            .replace("@EXE@", &ps_quote(&format!("C:\\Program Files\\{app}\\{exe_name}")))
+            .replace("@TOKEN@", &ps_quote(&group.enroll_token))
+            .replace("@API@", &ps_quote(api.trim_end_matches('/')))
+            .replace("@SENHA@", &ps_quote(&group.password))
+            .replace("@GRUPO@", &ps_quote(&group.name))
+            .replace("@INSTALL@", &install)
+            .replace("@SERVEROPTS@", &server_opts);
+        let ps = if q.get("format").is_some_and(|f| f == "cmd") {
+            format!("{WIN_INSTALL_CMD}{ps}")
+        } else {
+            ps
+        };
+        ps.replace('\n', "\r\n")
     };
     Ok((
         StatusCode::OK,

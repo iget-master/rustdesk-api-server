@@ -350,9 +350,20 @@ async function pageGroup(main, id) {
   const loadScript = async () => { try { scriptBox.value = await api(`/admin/api/groups/${id}/install-script?os=${osSel}`); } catch (e) { scriptBox.value = '# ' + e.message; } };
   const tabW = el('button', { class: 'on', onclick: () => { osSel = 'windows'; tabW.classList.add('on'); tabL.classList.remove('on'); loadScript(); } }, 'Windows (PowerShell)');
   const tabL = el('button', { onclick: () => { osSel = 'linux'; tabL.classList.add('on'); tabW.classList.remove('on'); loadScript(); } }, 'Linux (bash)');
-  const scriptCard = el('div', {}, el('h2', {}, 'Script de instalação', help('Rode como administrador em cada máquina do grupo. Ele instala o RustDesk se precisar, aponta para o seu servidor, grava a senha do grupo e cadastra a máquina aqui. Tudo em um passo.')),
+  const baixarCmd = async () => {
+    try {
+      const txt = await api(`/admin/api/groups/${id}/install-script?os=windows&format=cmd`);
+      const nome = 'instalar-' + (s.name || 'grupo').normalize('NFD').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase() + '.cmd';
+      const a = el('a', { href: URL.createObjectURL(new Blob([txt], { type: 'text/plain' })), download: nome });
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      toast('Copie o ' + nome + ' para a máquina e dê dois cliques.');
+    } catch (e) { fail(e); }
+  };
+  const btnCmd = el('button', { onclick: baixarCmd }, 'Baixar .cmd (recomendado)');
+  const scriptCard = el('div', {}, el('h2', {}, 'Script de instalação', help('Rode como administrador em cada máquina do grupo. Ele instala o cliente se precisar, garante o serviço do Windows, grava a senha do grupo e cadastra a máquina aqui. O .cmd faz tudo por dois cliques: pede elevação sozinho, não esbarra na política de execução de scripts do Windows e só fecha a janela quando você manda — se algo falhar, a mensagem fica na tela.')),
     el('div', { class: 'tabs' }, tabW, tabL), scriptBox,
-    el('div', { style: 'margin-top:8px' }, el('button', { onclick: () => copyText(scriptBox.value) }, 'Copiar script')));
+    el('div', { style: 'margin-top:8px;display:flex;gap:8px' }, btnCmd, el('button', { class: 'small', onclick: () => copyText(scriptBox.value) }, 'Copiar script')));
   loadScript();
 
   main.replaceChildren(header, pwCard, policyCard, optCard, devCard, grantCard, scriptCard);

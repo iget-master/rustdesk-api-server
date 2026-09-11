@@ -46,17 +46,22 @@ pub async fn ensure_installer_token(db: &Db) -> ApiResult<String> {
 }
 
 /// Só nomes simples de arquivo: nada de barras, `..` ou nome começando com ponto.
-/// Extrai um `x.y.z` de um nome de arquivo (o trecho entre hífens que são só números e pontos).
+/// Extrai a versão de um nome de arquivo: o trecho `x.y.z`, mais o número do nosso build
+/// quando ele vem logo depois (`RustdeskOlirio-1.4.9-7-x86_64.exe` -> `1.4.9-7`). É esse
+/// sufixo que faz um rebuild da mesma tag oficial contar como versão maior no auto-update.
 fn version_from_name(name: &str) -> Option<String> {
-    name.split('-')
-        .find(|part| {
-            let comps: Vec<&str> = part.split('.').collect();
-            comps.len() == 3
-                && comps
-                    .iter()
-                    .all(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_digit()))
-        })
-        .map(str::to_owned)
+    let is_num = |s: &str| !s.is_empty() && s.chars().all(|ch| ch.is_ascii_digit());
+    let parts: Vec<&str> = name.split('-').collect();
+    let i = parts.iter().position(|part| {
+        let comps: Vec<&str> = part.split('.').collect();
+        comps.len() == 3 && comps.iter().all(|c| is_num(c))
+    })?;
+    let mut v = parts[i].to_owned();
+    if parts.get(i + 1).is_some_and(|p| is_num(p)) {
+        v.push('-');
+        v.push_str(parts[i + 1]);
+    }
+    Some(v)
 }
 
 fn checked_name(name: &str) -> ApiResult<&str> {

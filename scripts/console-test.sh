@@ -81,12 +81,21 @@ must "cliente mais antigo recebe update" "$(hb_ver 1004090)" '.update.version=="
 must "cliente já atualizado não recebe update" "$(hb_ver 1004100)" 'has("update")|not'
 # máquina fora de grupo não recebe update (não é gerenciada)
 must "máquina fora de grupo não recebe update" "$(j -X POST "$API/api/heartbeat" -d '{"id":"777000777","uuid":"dGVzdA==","ver":1004090,"modified_at":0}')" 'has("update")|not'
+# rebuild nosso sobre a MESMA versão oficial: 1.4.9-8 > 1.4.9 (1004098 > 1004090).
+# Sem o sufixo do build, os dois empatam e o update nunca sairia.
+j -X PUT "$API/admin/api/settings" -H "$A" -d '{"client_version":"1.4.9-8","download_url":"http://api.example.com:21114/downloads/RustdeskOlirio-1.4.9-8-x86_64.exe"}' >/dev/null
+must "rebuild da mesma versão oficial dispara update" "$(hb_ver 1004090)" '.update.version=="1.4.9-8"'
+must "máquina já no build novo não recebe update" "$(hb_ver 1004098)" 'has("update")|not'
 
 echo "== instaladores hospedados na API"
 FAKE=/tmp/rdapi-fake-installer.bin; printf 'fake-installer' > "$FAKE"
 must "upload" "$(curl -sS -X PUT "$API/admin/api/downloads/Fake-1.4.11-x86_64.exe?use=1" -H "$A" -H 'Content-Type: application/octet-stream' --data-binary "@$FAKE")" '.name=="Fake-1.4.11-x86_64.exe" and .size==14 and .used==true'
 must "use=1 apontou o script para o arquivo" "$(j "$API/admin/api/settings" -H "$A")" '.download_url=="http://api.example.com:21114/downloads/Fake-1.4.11-x86_64.exe"'
 must "use=1 gravou a versão publicada (do nome)" "$(j "$API/admin/api/settings" -H "$A")" '.client_version=="1.4.11"'
+# nome com o número do nosso build: a versão publicada tem que incluir o sufixo
+curl -sS -X PUT "$API/admin/api/downloads/Fake-1.4.11-9-x86_64.exe?use=1" -H "$A" -H 'Content-Type: application/octet-stream' --data-binary "@$FAKE" >/dev/null
+must "use=1 lê a versão com o número do build" "$(j "$API/admin/api/settings" -H "$A")" '.client_version=="1.4.11-9"'
+must_code "apaga o instalador com sufixo" "$(code -X DELETE "$API/admin/api/downloads/Fake-1.4.11-9-x86_64.exe" -H "$A")" 200
 must "lista" "$(j "$API/admin/api/downloads" -H "$A")" 'map(select(.name=="Fake-1.4.11-x86_64.exe")) | length==1'
 must_code "download sem token" "$(code "$API/downloads/Fake-1.4.11-x86_64.exe")" 401
 must_code "download com token do grupo" "$(code "$API/downloads/Fake-1.4.11-x86_64.exe" -H "X-Enroll-Token: $ENROLL")" 200

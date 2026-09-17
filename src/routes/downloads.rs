@@ -224,10 +224,19 @@ pub async fn upload(
                 .await?;
         if let Some(api_url) = api_url.filter(|u| !u.trim().is_empty()) {
             let url = format!("{}/downloads/{name}", api_url.trim().trim_end_matches('/'));
+            // O sistema sai da extensão: `.deb` define o par do Linux, qualquer outra coisa o do
+            // Windows. Assim o workflow envia os dois pacotes com o mesmo `?use=1` e nenhum
+            // sobrescreve o instalador do outro sistema.
+            let (url_key, ver_key) = if name.ends_with(".deb") {
+                ("download_url_linux", "client_version_linux")
+            } else {
+                ("download_url", "client_version")
+            };
             sqlx::query(
-                "INSERT INTO settings (key, value) VALUES ('download_url', ?) \
+                "INSERT INTO settings (key, value) VALUES (?, ?) \
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             )
+            .bind(url_key)
             .bind(&url)
             .execute(&st.db)
             .await?;
@@ -235,9 +244,10 @@ pub async fn upload(
             // vira `client_version`, que dispara o auto-update nas máquinas em versão mais antiga.
             if let Some(ver) = version_from_name(&name) {
                 sqlx::query(
-                    "INSERT INTO settings (key, value) VALUES ('client_version', ?) \
+                    "INSERT INTO settings (key, value) VALUES (?, ?) \
                      ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 )
+                .bind(ver_key)
                 .bind(&ver)
                 .execute(&st.db)
                 .await?;

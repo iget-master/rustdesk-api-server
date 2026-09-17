@@ -146,8 +146,22 @@ pub async fn heartbeat(State(st): State<AppState>, body: Bytes) -> ApiResult<Jso
         // quando está ocioso.
         let client_ver = i(&v, "ver").unwrap_or(0);
         if client_ver > 0 {
-            let target_ver = setting(&st.db, "client_version").await?;
-            let download_url = setting(&st.db, "download_url").await?;
+            // O instalador é por sistema: `.deb` nas máquinas Ubuntu, `.exe` nas Windows. O
+            // sistema vem do `/api/sysinfo`, guardado em `devices.os` ("linux / Ubuntu 24.04").
+            // Enquanto ele não chega, nenhuma atualização é oferecida — mandar o pacote do
+            // sistema errado faria a máquina baixar e falhar a cada heartbeat.
+            let os: String = sqlx::query_scalar("SELECT os FROM devices WHERE id = ?")
+                .bind(&id)
+                .fetch_optional(&st.db)
+                .await?
+                .unwrap_or_default();
+            let (ver_key, url_key) = match os.to_ascii_lowercase() {
+                o if o.starts_with("linux") => ("client_version_linux", "download_url_linux"),
+                o if o.is_empty() => ("", ""),
+                _ => ("client_version", "download_url"),
+            };
+            let target_ver = if ver_key.is_empty() { String::new() } else { setting(&st.db, ver_key).await? };
+            let download_url = if url_key.is_empty() { String::new() } else { setting(&st.db, url_key).await? };
             if !target_ver.is_empty()
                 && !download_url.is_empty()
                 && version_number(&target_ver) > client_ver

@@ -59,7 +59,20 @@ pub fn router() -> Router<AppState> {
         .layer(axum::extract::DefaultBodyLimit::max(300 * 1024 * 1024))
 }
 
-const SETTING_KEYS: &[&str] = &["server_host", "server_key", "api_url", "download_url", "client_app_name", "require_group", "client_version"];
+// `download_url`/`client_version` são o par do Windows; o Linux tem o seu porque os dois
+// sistemas atualizam em ritmos diferentes — um build de Windows não deve apontar as máquinas
+// Ubuntu para um `.exe`, nem o contrário.
+const SETTING_KEYS: &[&str] = &[
+    "server_host",
+    "server_key",
+    "api_url",
+    "download_url",
+    "client_app_name",
+    "require_group",
+    "client_version",
+    "download_url_linux",
+    "client_version_linux",
+];
 
 async fn settings_map(db: &Db) -> ApiResult<Map<String, Value>> {
     let rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM settings")
@@ -350,6 +363,101 @@ if ($PSCommandPath) { Write-Host ''; Read-Host 'Enter para fechar' | Out-Null }
 if ($erro) { exit 1 }
 "##;
 
+/// Script de instalação do Ubuntu. Mesma ideia do `WIN_INSTALL_PS1`: cada etapa é conferida e a
+/// falha para o script com o motivo na tela. A diferença que importa é a última etapa — em sessão
+/// Wayland o acesso desassistido simplesmente não funciona, e é melhor a máquina sair do script já
+/// corrigida (ou avisando alto) do que descobrir isso na primeira vez que alguém precisar entrar.
+const LINUX_INSTALL_SH: &str = r##"#!/usr/bin/env bash
+# @APPNAME@ — Grupo: @GROUPNAME@
+# Instala o cliente, liga no seu servidor, aplica a senha do grupo e matricula esta máquina.
+# Rode como root:  sudo bash este-arquivo.sh
+#
+# Sessão gráfica: em Wayland a captura de tela passa pelo portal do desktop, que pede
+# confirmação na tela a cada sessão — ou seja, acesso desassistido não funciona. No fim o
+# script desliga o Wayland no gdm3. Para não mexer nisso, rode com OLIRIO_FORCE_XORG=0.
+
+set -euo pipefail
+TOKEN=@TOKEN@
+API=@API@
+SENHA=@SENHA@
+GRUPO=@GRUPO@
+EXE=/usr/bin/rustdesk
+
+etapa() { echo; echo "== $1"; }
+falhou() { echo; echo "FALHOU: $1" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || falhou 'Rode como root: sudo bash este-arquivo.sh'
+
+etapa 'Instalação'
+@INSTALL@
+
+etapa 'Serviço'
+# O postinst do pacote já habilita e sobe o rustdesk.service; isto é rede de segurança.
+systemctl enable --now rustdesk >/dev/null 2>&1 || true
+for _ in $(seq 1 30); do systemctl is-active --quiet rustdesk && break; sleep 1; done
+systemctl is-active --quiet rustdesk || falhou 'o serviço rustdesk não subiu (veja: systemctl status rustdesk)'
+echo 'serviço rustdesk ativo.'
+
+etapa 'Configuração'
+# Sem o serviço no ar, tudo abaixo é descartado em silêncio: as opções vão por IPC para ele.
+@SERVEROPTS@
+"$EXE" --option approve-mode password >/dev/null
+"$EXE" --option verification-method use-permanent-password >/dev/null
+"$EXE" --option enroll-token "$TOKEN" >/dev/null
+sleep 1
+LIDO=$("$EXE" --option enroll-token | tail -n 1 | tr -d '[:space:]')
+[ "$LIDO" = "$TOKEN" ] || falhou 'o cliente não gravou o token de matrícula (o serviço recusou a configuração)'
+RES=$("$EXE" --password "$SENHA" | tail -n 1 | tr -d '[:space:]')
+[ "$RES" = 'Done!' ] || falhou "não consegui gravar a senha do grupo: $RES"
+echo 'Token de matrícula e senha do grupo aplicados.'
+
+etapa 'Matrícula'
+ID=''
+for _ in $(seq 1 15); do
+  ID=$("$EXE" --get-id | tail -n 1 | tr -d '[:space:]')
+  case "$ID" in [0-9][0-9][0-9][0-9][0-9][0-9]*) break ;; esac
+  sleep 2
+done
+case "$ID" in
+  [0-9][0-9][0-9][0-9][0-9][0-9]*) ;;
+  *) falhou "não consegui ler o ID desta máquina (li '$ID')" ;;
+esac
+curl -fsS -X POST "$API/api/enroll" -H 'Content-Type: application/json' \
+  -d "{\"token\":\"$TOKEN\",\"id\":\"$ID\",\"hostname\":\"$(hostname)\"}" >/dev/null
+echo
+echo "Pronto: máquina $ID matriculada no grupo $GRUPO."
+
+etapa 'Sessão gráfica'
+TIPO=''
+for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}' || true); do
+  [ "$(loginctl show-session "$s" -p Type --value 2>/dev/null || true)" = wayland ] && TIPO=wayland
+done
+# Sem sessão aberta agora, o que vale é o que o gdm3 vai subir da próxima vez.
+if [ -z "$TIPO" ] && [ -f /etc/gdm3/custom.conf ] && ! grep -qi '^WaylandEnable=false' /etc/gdm3/custom.conf; then
+  TIPO=wayland
+fi
+if [ "$TIPO" != wayland ]; then
+  echo 'Xorg — acesso desassistido funciona.'
+elif [ "${OLIRIO_FORCE_XORG:-1}" = 0 ]; then
+  echo 'ATENÇÃO: Wayland, e OLIRIO_FORCE_XORG=0 pediu para não mexer.'
+  echo 'Enquanto estiver em Wayland, ninguém acessa esta máquina sem alguém autorizar na tela.'
+elif [ -f /etc/gdm3/custom.conf ]; then
+  if grep -q 'WaylandEnable' /etc/gdm3/custom.conf; then
+    sed -i 's/^[#[:space:]]*WaylandEnable.*/WaylandEnable=false/' /etc/gdm3/custom.conf
+  elif grep -q '^\[daemon\]' /etc/gdm3/custom.conf; then
+    sed -i 's/^\[daemon\]/[daemon]\nWaylandEnable=false/' /etc/gdm3/custom.conf
+  else
+    printf '\n[daemon]\nWaylandEnable=false\n' >> /etc/gdm3/custom.conf
+  fi
+  echo 'Wayland desligado no gdm3 (WaylandEnable=false em /etc/gdm3/custom.conf).'
+  echo 'REINICIE A MÁQUINA: só depois disso a sessão volta em Xorg e o acesso desassistido'
+  echo 'passa a funcionar.'
+else
+  echo 'ATENÇÃO: sessão Wayland e não encontrei /etc/gdm3/custom.conf (outro gerenciador de'
+  echo 'login?). Desligue o Wayland à mão, senão o acesso desassistido não vai funcionar.'
+fi
+"##;
+
 /// Mesmo script embrulhado num `.cmd`: pede elevação, roda o PowerShell com `-ExecutionPolicy
 /// Bypass` (o padrão do Windows recusa `.ps1`) e dá `pause` no fim, para a janela não fechar
 /// levando o erro junto. O `LastIndexOf` acha o marcador da segunda vez — a primeira é esta linha.
@@ -387,11 +495,10 @@ pub async fn groups_install_script(
             .unwrap_or("")
             .to_owned()
     };
-    let (host, key, api, download, custom_app) = (
+    let (host, key, api, custom_app) = (
         get("server_host"),
         get("server_key"),
         get("api_url"),
-        get("download_url"),
         get("client_app_name"),
     );
     if host.is_empty() || api.is_empty() {
@@ -400,35 +507,55 @@ pub async fn groups_install_script(
         ));
     }
     let os = q.get("os").map(String::as_str).unwrap_or("windows");
+    // O instalador é por sistema: o `.deb` das máquinas Ubuntu e o `.exe` das Windows são
+    // publicados em configurações separadas.
+    let download = if os == "linux" {
+        get("download_url_linux")
+    } else {
+        get("download_url")
+    };
     let script = if os == "linux" {
-        let mut lines = vec![
-            "#!/usr/bin/env bash".to_owned(),
-            format!("# RustDesk — Grupo: {}. Execute como root com o RustDesk já instalado.", group.name),
-            "set -e".to_owned(),
-            "command -v rustdesk >/dev/null || { echo 'Instale o RustDesk primeiro'; exit 1; }".to_owned(),
-            format!("rustdesk --option custom-rendezvous-server {}", sh_quote(&host)),
-        ];
-        if !key.is_empty() {
-            lines.push(format!("rustdesk --option key {}", sh_quote(&key)));
-        }
-        lines.extend([
-            format!("rustdesk --option api-server {}", sh_quote(&api)),
-            "rustdesk --option approve-mode password".to_owned(),
-            "rustdesk --option verification-method use-permanent-password".to_owned(),
-            format!("rustdesk --option enroll-token {}", sh_quote(&group.enroll_token)),
-            format!("rustdesk --password {}", sh_quote(&group.password)),
-            "ID=$(rustdesk --get-id | tail -n 1 | tr -d '[:space:]')".to_owned(),
+        let app = if custom_app.is_empty() { "RustDesk" } else { custom_app.as_str() };
+        let install = if download.is_empty() {
+            "command -v rustdesk >/dev/null || falhou 'Instale o cliente primeiro: o link do instalador Linux não está preenchido em Configurações.'\necho 'já instalado.'".to_owned()
+        } else {
+            // Sempre reinstala: no Ubuntu o `apt-get install` de um .deb mais novo é upgrade,
+            // então rodar o script de novo atualiza a máquina — diferente do Windows.
             format!(
-                "curl -sS -X POST {} -H 'Content-Type: application/json' \\",
-                sh_quote(&format!("{api}/api/enroll"))
-            ),
-            format!(
-                "  -d \"{{\\\"token\\\":\\\"{}\\\",\\\"id\\\":\\\"$ID\\\",\\\"hostname\\\":\\\"$(hostname)\\\"}}\"",
-                group.enroll_token
-            ),
-            format!("echo; echo \"Máquina $ID matriculada no grupo {}.\"", group.name),
-        ]);
-        lines.join("\n") + "\n"
+                "TMP=$(mktemp -d)\n\
+                 PACOTE=\"$TMP/pacote.deb\"\n\
+                 echo 'Baixando o pacote...'\n\
+                 curl -fsSL -H \"X-Enroll-Token: $TOKEN\" -o \"$PACOTE\" {url}\n\
+                 echo 'Instalando (o apt resolve as dependências)...'\n\
+                 apt-get install -y \"$PACOTE\"\n\
+                 rm -rf \"$TMP\"\n\
+                 command -v rustdesk >/dev/null || falhou 'a instalação não concluiu: rustdesk não está no PATH'\n\
+                 echo 'instalado.'",
+                url = sh_quote(&download)
+            )
+        };
+        let server_opts = if custom_app.is_empty() {
+            let mut o = vec![format!(
+                "\"$EXE\" --option custom-rendezvous-server {} >/dev/null",
+                sh_quote(&host)
+            )];
+            if !key.is_empty() {
+                o.push(format!("\"$EXE\" --option key {} >/dev/null", sh_quote(&key)));
+            }
+            o.push(format!("\"$EXE\" --option api-server {} >/dev/null", sh_quote(&api)));
+            o.join("\n")
+        } else {
+            "# Servidor, relay, API e chave já vêm fixos no cliente personalizado.".to_owned()
+        };
+        LINUX_INSTALL_SH
+            .replace("@APPNAME@", app)
+            .replace("@GROUPNAME@", &group.name)
+            .replace("@TOKEN@", &sh_quote(&group.enroll_token))
+            .replace("@API@", &sh_quote(api.trim_end_matches('/')))
+            .replace("@SENHA@", &sh_quote(&group.password))
+            .replace("@GRUPO@", &sh_quote(&group.name))
+            .replace("@INSTALL@", &install)
+            .replace("@SERVEROPTS@", &server_opts)
     } else {
         // Cliente personalizado (client_app_name): instala em C:\Program Files\<App>\<App>.exe e já
         // vem com servidor, relay, API e chave fixos; só precisa do token de matrícula.

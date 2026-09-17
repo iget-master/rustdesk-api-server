@@ -86,6 +86,18 @@ must "máquina fora de grupo não recebe update" "$(j -X POST "$API/api/heartbea
 j -X PUT "$API/admin/api/settings" -H "$A" -d '{"client_version":"1.4.9-8","download_url":"http://api.example.com:21114/downloads/RustdeskOlirio-1.4.9-8-x86_64.exe"}' >/dev/null
 must "rebuild da mesma versão oficial dispara update" "$(hb_ver 1004090)" '.update.version=="1.4.9-8"'
 must "máquina já no build novo não recebe update" "$(hb_ver 1004098)" 'has("update")|not'
+# Ubuntu tem par de configurações próprio: mandar .exe para máquina Linux (ou o contrário)
+# faria ela baixar e falhar a cada heartbeat. O sistema vem do sysinfo.
+DEVL=${DEV}5
+j -X POST "$API/api/enroll" -d "{\"token\":\"$ENROLL\",\"id\":\"$DEVL\",\"hostname\":\"PDV-UBUNTU\"}" >/dev/null
+hbl() { j -X POST "$API/api/heartbeat" -d "{\"id\":\"$DEVL\",\"uuid\":\"dGVzdA==\",\"ver\":$1,\"modified_at\":0}"; }
+must "sem sysinfo o sistema é desconhecido e nada é oferecido" "$(hbl 1004090)" 'has("update")|not'
+j -X POST "$API/api/sysinfo" -d "{\"id\":\"$DEVL\",\"uuid\":\"dGVzdA==\",\"hostname\":\"PDV-UBUNTU\",\"username\":\"caixa\",\"os\":\"linux / Ubuntu 26.04\",\"version\":\"1.4.9\"}" >/dev/null
+must "máquina Ubuntu não recebe o instalador do Windows" "$(hbl 1004090)" 'has("update")|not'
+j -X PUT "$API/admin/api/settings" -H "$A" -d '{"client_version_linux":"1.4.9-9","download_url_linux":"http://api.example.com:21114/downloads/RustdeskOlirio-1.4.9-9-amd64.deb"}' >/dev/null
+must "máquina Ubuntu recebe o .deb" "$(hbl 1004090)" '.update.version=="1.4.9-9" and (.update.url|test("amd64[.]deb"))'
+must "máquina Ubuntu já atualizada não recebe update" "$(hbl 1004099)" 'has("update")|not'
+must "máquina Windows continua recebendo o .exe" "$(hb_ver 1004090)" '.update.url|test("x86_64[.]exe")'
 
 echo "== instaladores hospedados na API"
 FAKE=/tmp/rdapi-fake-installer.bin; printf 'fake-installer' > "$FAKE"
@@ -95,6 +107,11 @@ must "use=1 gravou a versão publicada (do nome)" "$(j "$API/admin/api/settings"
 # nome com o número do nosso build: a versão publicada tem que incluir o sufixo
 curl -sS -X PUT "$API/admin/api/downloads/Fake-1.4.11-9-x86_64.exe?use=1" -H "$A" -H 'Content-Type: application/octet-stream' --data-binary "@$FAKE" >/dev/null
 must "use=1 lê a versão com o número do build" "$(j "$API/admin/api/settings" -H "$A")" '.client_version=="1.4.11-9"'
+# .deb cai no par do Linux, pela extensão, sem encostar no do Windows
+curl -sS -X PUT "$API/admin/api/downloads/Fake-1.4.12-3-amd64.deb?use=1" -H "$A" -H 'Content-Type: application/octet-stream' --data-binary "@$FAKE" >/dev/null
+must "use=1 de .deb grava o par do Linux" "$(j "$API/admin/api/settings" -H "$A")" '.client_version_linux=="1.4.12-3" and (.download_url_linux|test("amd64[.]deb"))'
+must "use=1 de .deb não mexe no instalador do Windows" "$(j "$API/admin/api/settings" -H "$A")" '.client_version=="1.4.11-9" and (.download_url|test("x86_64[.]exe"))'
+must_code "apaga o .deb de teste" "$(code -X DELETE "$API/admin/api/downloads/Fake-1.4.12-3-amd64.deb" -H "$A")" 200
 must_code "apaga o instalador com sufixo" "$(code -X DELETE "$API/admin/api/downloads/Fake-1.4.11-9-x86_64.exe" -H "$A")" 200
 must "lista" "$(j "$API/admin/api/downloads" -H "$A")" 'map(select(.name=="Fake-1.4.11-x86_64.exe")) | length==1'
 must_code "download sem token" "$(code "$API/downloads/Fake-1.4.11-x86_64.exe")" 401
@@ -195,7 +212,14 @@ NEW=$(j -X POST "$API/admin/api/groups/$SID/rotate-password" -H "$A" | jq -r .pa
 [ "$NEW" != "$PASS" ] && [ ${#NEW} -ge 8 ] || die "rotação de senha"
 must "AB atualizado com a nova senha" "$(j -X POST "$API/api/ab/peers?current=1&pageSize=100&ab=$GUID" -H "$E" -H 'Content-Length: 0')" ".data[0].password==\"$NEW\""
 j "$API/admin/api/groups/$SID/install-script?os=windows" -H "$A" | grep -q "\$senha = '$NEW'" && echo "ok  script Windows traz a senha nova" || die "script Windows"
-j "$API/admin/api/groups/$SID/install-script?os=linux" -H "$A" | grep -q "$ENROLL" && echo "ok  script Linux traz o token de matrícula" || die "script Linux"
+SCRIPTL=$(j "$API/admin/api/groups/$SID/install-script?os=linux" -H "$A")
+grep -q "$ENROLL" <<< "$SCRIPTL" && echo "ok  script Linux traz o token de matrícula" || die "script Linux"
+grep -q "apt-get install -y" <<< "$SCRIPTL" && echo "ok  script Linux instala o .deb" || die "script Linux não instala o pacote"
+grep -q "X-Enroll-Token" <<< "$SCRIPTL" && echo "ok  script Linux baixa com o token" || die "script Linux baixa sem token"
+grep -q "systemctl is-active" <<< "$SCRIPTL" && echo "ok  script Linux confere o serviço" || die "script Linux não confere o serviço"
+# Em Wayland o acesso desassistido não funciona: o script tem que resolver ou avisar.
+grep -q "WaylandEnable=false" <<< "$SCRIPTL" && echo "ok  script Linux trata o Wayland" || die "script Linux ignora o Wayland"
+grep -q "não consegui ler o ID" <<< "$SCRIPTL" && echo "ok  script Linux exige um ID válido" || die "script Linux matricula sem ID"
 must "heartbeat entrega a senha rotacionada" "$(hb "$DEV" "$ENROLL" "$PTAG")" ".password==\"$NEW\""
 must "máquina do console (sem token) recebe a senha rotacionada" "$(hb_plain "$DEV3")" ".password==\"$NEW\""
 must "console marca a senha como pendente" "$(j "$API/admin/api/devices?group=$SID" -H "$A")" "map(select(.id==\"$DEV\")) | .[0].password_synced==false"

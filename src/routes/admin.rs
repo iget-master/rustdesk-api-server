@@ -436,8 +436,19 @@ done
 if [ -z "$TIPO" ] && [ -f /etc/gdm3/custom.conf ] && ! grep -qi '^WaylandEnable=false' /etc/gdm3/custom.conf; then
   TIPO=wayland
 fi
+# O GNOME 49 removeu o código do X11, e o Ubuntu 25.10+ não traz mais sessão GNOME em Xorg:
+# não existe gnome-session-xorg nem .desktop em /usr/share/xsessions. Nesses sistemas,
+# desligar o Wayland no gdm3 deixa a tela de login SEM NENHUMA sessão para entrar — ou seja,
+# tranca a máquina. Só mexemos no gdm3 se houver de fato uma sessão X11 instalada.
+TEM_X11=''
+for d in /usr/share/xsessions/*.desktop; do [ -e "$d" ] && TEM_X11=1; done
 if [ "$TIPO" != wayland ]; then
   echo 'Xorg — acesso desassistido funciona.'
+elif [ -z "$TEM_X11" ]; then
+  echo 'ATENÇÃO: sessão Wayland, e este sistema não tem nenhuma sessão X11 instalada.'
+  echo 'NÃO vou mexer no gdm3: aqui isso deixaria o login sem sessão nenhuma para entrar.'
+  echo 'Nesta máquina o acesso desassistido depende do cliente com captura DRM/KMS'
+  echo '(RustDesk 1.5.0 em diante). Até atualizar o cliente, alguém precisa autorizar na tela.'
 elif [ "${OLIRIO_FORCE_XORG:-1}" = 0 ]; then
   echo 'ATENÇÃO: Wayland, e OLIRIO_FORCE_XORG=0 pediu para não mexer.'
   echo 'Enquanto estiver em Wayland, ninguém acessa esta máquina sem alguém autorizar na tela.'

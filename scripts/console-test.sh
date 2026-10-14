@@ -219,6 +219,8 @@ grep -q "X-Enroll-Token" <<< "$SCRIPTL" && echo "ok  script Linux baixa com o to
 grep -q "systemctl is-active" <<< "$SCRIPTL" && echo "ok  script Linux confere o serviço" || die "script Linux não confere o serviço"
 # Em Wayland o acesso desassistido não funciona: o script tem que resolver ou avisar.
 grep -q "WaylandEnable=false" <<< "$SCRIPTL" && echo "ok  script Linux trata o Wayland" || die "script Linux ignora o Wayland"
+# No Ubuntu 25.10+ não existe sessão GNOME em Xorg: desligar o Wayland lá tranca o login.
+grep -q "usr/share/xsessions" <<< "$SCRIPTL" && echo "ok  script Linux só força Xorg se houver sessão X11" || die "script Linux força Xorg às cegas"
 grep -q "não consegui ler o ID" <<< "$SCRIPTL" && echo "ok  script Linux exige um ID válido" || die "script Linux matricula sem ID"
 must "heartbeat entrega a senha rotacionada" "$(hb "$DEV" "$ENROLL" "$PTAG")" ".password==\"$NEW\""
 must "máquina do console (sem token) recebe a senha rotacionada" "$(hb_plain "$DEV3")" ".password==\"$NEW\""

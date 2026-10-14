@@ -372,9 +372,8 @@ const LINUX_INSTALL_SH: &str = r##"#!/usr/bin/env bash
 # Instala o cliente, liga no seu servidor, aplica a senha do grupo e matricula esta máquina.
 # Rode como root:  sudo bash este-arquivo.sh
 #
-# Sessão gráfica: em Wayland a captura de tela passa pelo portal do desktop, que pede
-# confirmação na tela a cada sessão — ou seja, acesso desassistido não funciona. No fim o
-# script desliga o Wayland no gdm3. Para não mexer nisso, rode com OLIRIO_FORCE_XORG=0.
+# Wayland: este cliente captura direto do DRM/KMS, sem passar pelo portal do desktop, então
+# funciona desassistido em Wayland e antes de alguém logar. O script não mexe no gdm3.
 
 set -euo pipefail
 TOKEN=@TOKEN@
@@ -432,40 +431,16 @@ TIPO=''
 for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}' || true); do
   [ "$(loginctl show-session "$s" -p Type --value 2>/dev/null || true)" = wayland ] && TIPO=wayland
 done
-# Sem sessão aberta agora, o que vale é o que o gdm3 vai subir da próxima vez.
-if [ -z "$TIPO" ] && [ -f /etc/gdm3/custom.conf ] && ! grep -qi '^WaylandEnable=false' /etc/gdm3/custom.conf; then
-  TIPO=wayland
-fi
-# O GNOME 49 removeu o código do X11, e o Ubuntu 25.10+ não traz mais sessão GNOME em Xorg:
-# não existe gnome-session-xorg nem .desktop em /usr/share/xsessions. Nesses sistemas,
-# desligar o Wayland no gdm3 deixa a tela de login SEM NENHUMA sessão para entrar — ou seja,
-# tranca a máquina. Só mexemos no gdm3 se houver de fato uma sessão X11 instalada.
-TEM_X11=''
-for d in /usr/share/xsessions/*.desktop; do [ -e "$d" ] && TEM_X11=1; done
-if [ "$TIPO" != wayland ]; then
-  echo 'Xorg — acesso desassistido funciona.'
-elif [ -z "$TEM_X11" ]; then
-  echo 'ATENÇÃO: sessão Wayland, e este sistema não tem nenhuma sessão X11 instalada.'
-  echo 'NÃO vou mexer no gdm3: aqui isso deixaria o login sem sessão nenhuma para entrar.'
-  echo 'Nesta máquina o acesso desassistido depende do cliente com captura DRM/KMS'
-  echo '(RustDesk 1.5.0 em diante). Até atualizar o cliente, alguém precisa autorizar na tela.'
-elif [ "${OLIRIO_FORCE_XORG:-1}" = 0 ]; then
-  echo 'ATENÇÃO: Wayland, e OLIRIO_FORCE_XORG=0 pediu para não mexer.'
-  echo 'Enquanto estiver em Wayland, ninguém acessa esta máquina sem alguém autorizar na tela.'
-elif [ -f /etc/gdm3/custom.conf ]; then
-  if grep -q 'WaylandEnable' /etc/gdm3/custom.conf; then
-    sed -i 's/^[#[:space:]]*WaylandEnable.*/WaylandEnable=false/' /etc/gdm3/custom.conf
-  elif grep -q '^\[daemon\]' /etc/gdm3/custom.conf; then
-    sed -i 's/^\[daemon\]/[daemon]\nWaylandEnable=false/' /etc/gdm3/custom.conf
-  else
-    printf '\n[daemon]\nWaylandEnable=false\n' >> /etc/gdm3/custom.conf
-  fi
-  echo 'Wayland desligado no gdm3 (WaylandEnable=false em /etc/gdm3/custom.conf).'
-  echo 'REINICIE A MÁQUINA: só depois disso a sessão volta em Xorg e o acesso desassistido'
-  echo 'passa a funcionar.'
+echo "sessão: ${TIPO:-xorg ou nenhuma aberta}"
+# Este cliente captura direto do DRM/KMS (libdrmtap), sem passar pelo portal do desktop: não
+# pede autorização na tela e funciona antes de alguém logar. Por isso o script NÃO mexe no
+# gdm3 — e não deve: o GNOME 49 removeu o X11, e no Ubuntu 25.10+ desligar o Wayland deixa a
+# tela de login sem nenhuma sessão para entrar.
+if [ -e /dev/dri/card0 ]; then
+  echo 'captura DRM/KMS disponível (/dev/dri) — acesso desassistido funciona em Wayland.'
 else
-  echo 'ATENÇÃO: sessão Wayland e não encontrei /etc/gdm3/custom.conf (outro gerenciador de'
-  echo 'login?). Desligue o Wayland à mão, senão o acesso desassistido não vai funcionar.'
+  echo 'ATENÇÃO: não encontrei /dev/dri nesta máquina. Sem acesso ao DRM a captura de tela'
+  echo 'não funciona; confira se há GPU e driver de vídeo ativos.'
 fi
 "##;
 

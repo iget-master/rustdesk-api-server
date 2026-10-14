@@ -217,10 +217,10 @@ grep -q "$ENROLL" <<< "$SCRIPTL" && echo "ok  script Linux traz o token de matr�
 grep -q "apt-get install -y" <<< "$SCRIPTL" && echo "ok  script Linux instala o .deb" || die "script Linux não instala o pacote"
 grep -q "X-Enroll-Token" <<< "$SCRIPTL" && echo "ok  script Linux baixa com o token" || die "script Linux baixa sem token"
 grep -q "systemctl is-active" <<< "$SCRIPTL" && echo "ok  script Linux confere o serviço" || die "script Linux não confere o serviço"
-# Em Wayland o acesso desassistido não funciona: o script tem que resolver ou avisar.
-grep -q "WaylandEnable=false" <<< "$SCRIPTL" && echo "ok  script Linux trata o Wayland" || die "script Linux ignora o Wayland"
+# A captura é DRM/KMS, então Wayland funciona; o script só confere o acesso ao /dev/dri.
+grep -q "dev/dri" <<< "$SCRIPTL" && echo "ok  script Linux confere a captura DRM" || die "script Linux ignora o DRM"
 # No Ubuntu 25.10+ não existe sessão GNOME em Xorg: desligar o Wayland lá tranca o login.
-grep -q "usr/share/xsessions" <<< "$SCRIPTL" && echo "ok  script Linux só força Xorg se houver sessão X11" || die "script Linux força Xorg às cegas"
+grep -q "WaylandEnable" <<< "$SCRIPTL" && die "script Linux ainda desliga o Wayland no gdm3" || echo "ok  script Linux não desliga o Wayland"
 grep -q "não consegui ler o ID" <<< "$SCRIPTL" && echo "ok  script Linux exige um ID válido" || die "script Linux matricula sem ID"
 must "heartbeat entrega a senha rotacionada" "$(hb "$DEV" "$ENROLL" "$PTAG")" ".password==\"$NEW\""
 must "máquina do console (sem token) recebe a senha rotacionada" "$(hb_plain "$DEV3")" ".password==\"$NEW\""
